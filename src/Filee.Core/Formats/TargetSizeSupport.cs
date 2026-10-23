@@ -6,7 +6,7 @@ public static class TargetSizeSupport
 {
     private static readonly HashSet<string> ImageFormats =
     [
-        "jpg", "jpeg", "webp", "avif", "jxl", "jp2", "png", "bmp", "tiff", "tif",
+        "jpg", "jpeg", "webp", "avif", "jxl", "jp2", "png", "bmp", "tiff", "tif", "gif", "apng", "mng",
     ];
 
     private static readonly HashSet<string> LossyAudioFormats =
