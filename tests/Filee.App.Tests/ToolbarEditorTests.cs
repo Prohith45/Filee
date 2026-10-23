@@ -907,4 +907,30 @@ public class PresetAvailabilityTests
         Assert.Null(vm.Palette.Single(c => c.PresetId == "test-jpg").Reason);
         Assert.True(vm.Palette.Single(c => c.PresetId == "test-mp4").IsDimmed);
     }
+
+    [AvaloniaFact]
+    public void Prompt_presets_judge_availability_correctly()
+    {
+        using var f = new Fixture();
+        var reduce = new Preset { Kind = PresetKind.Prompt, Prompt = PromptKind.TargetSize };
+        var pixels = new Preset { Kind = PresetKind.Prompt, Prompt = PromptKind.Pixels };
+        var quality = new Preset { Kind = PresetKind.Prompt, Prompt = PromptKind.Quality };
+
+        var png = FormatRegistry.Get("png");
+        var pdf = FormatRegistry.Get("pdf");
+        var zip = FormatRegistry.Get("zip");
+
+        // Reduce size: usable for png and pdf, unusable for zip
+        Assert.Equal(PresetUse.Usable, f.Availability.ForPalette([png]).Judge(reduce).Use);
+        Assert.Equal(PresetUse.Usable, f.Availability.ForPalette([pdf]).Judge(reduce).Use);
+        Assert.Equal(PresetUse.Unusable, f.Availability.ForPalette([zip]).Judge(reduce).Use);
+
+        // Pixels: usable for png, unusable for zip
+        Assert.Equal(PresetUse.Usable, f.Availability.ForPalette([png]).Judge(pixels).Use);
+        Assert.Equal(PresetUse.Unusable, f.Availability.ForPalette([zip]).Judge(pixels).Use);
+
+        // Quality: usable for png, unusable for pdf
+        Assert.Equal(PresetUse.Usable, f.Availability.ForPalette([png]).Judge(quality).Use);
+        Assert.Equal(PresetUse.Unusable, f.Availability.ForPalette([pdf]).Judge(quality).Use);
+    }
 }

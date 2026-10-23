@@ -32,6 +32,16 @@ public sealed class PresetAvailability
     [
         "jpg", "png", "webp", "bmp", "avif", "jxl", "jp2", "tga", "qoi", "dds", "pcx",
     ];
+
+    private static readonly HashSet<string> TargetSizeImageFormats =
+    [
+        "jpg", "jpeg", "webp", "avif", "jxl", "jp2", "png", "bmp", "tiff", "tif",
+    ];
+
+    private static readonly HashSet<string> LossyAudioFormats =
+    [
+        "mp3", "m4a", "m4b", "aac", "ogg", "opus", "wma", "weba", "ac3", "amr",
+    ];
     /// <summary>
     /// Returns <c>null</c> when at least one of <paramref name="formats"/> can be converted with the preset,
     /// otherwise a localized reason — naming the optional engine to download when that would help.
@@ -68,7 +78,7 @@ public sealed class PresetAvailability
         {
             if (preset.IsGroup)
                 return new(PresetUse.Usable, null);
-            if (preset.IsTool && _formats.Count > 0)
+            if ((preset.IsTool || preset.IsPrompt) && _formats.Count > 0)
             {
                 PresetJudgement first = default;
                 foreach (var format in _formats)
@@ -93,6 +103,62 @@ public sealed class PresetAvailability
             if (formats.Count > 0 && formats.All(f => WritableSingleFrameRasterFormats.Contains(f.Id)))
                 return new(PresetUse.Usable, null);
             return new(PresetUse.Unusable, _loc["error.unsupported_source"]);
+        }
+
+        if (preset.IsPrompt)
+        {
+            if (formats.Count == 0)
+                return new(PresetUse.Unusable, _loc["error.unsupported_source"]);
+
+            switch (preset.Prompt)
+            {
+                case PromptKind.TargetSize:
+                    bool CanTargetSize(FileFormat f) => f.Id == "pdf" || TargetSizeImageFormats.Contains(f.Id)
+                        || f.Category == FormatCategory.Video || LossyAudioFormats.Contains(f.Id);
+
+                    if (formats.All(f => !CanTargetSize(f)))
+                        return new(PresetUse.Unusable, _loc["error.size_target_unsupported"]);
+
+                    bool NeedsFfmpeg(FileFormat f) => f.Category == FormatCategory.Video || LossyAudioFormats.Contains(f.Id);
+                    if (formats.Any(NeedsFfmpeg))
+                    {
+                        bool HasMediaRoute(RoutePlanner planner) => formats.Where(NeedsFfmpeg).Any(f => planner.CanConvert(f.Id, f.Id));
+                        if (HasMediaRoute(installedPlanner()))
+                            return new(PresetUse.Usable, null);
+                        return packageEnabling(HasMediaRoute) is { } pkg
+                            ? new(PresetUse.NeedsPackage, _loc.Format("engine.reason.needs_package", pkg.Name))
+                            : new(PresetUse.Unusable, _loc["error.no_route"]);
+                    }
+
+                    return new(PresetUse.Usable, null);
+
+                case PromptKind.Pixels:
+                    bool CanPixels(FileFormat f) => WritableSingleFrameRasterFormats.Contains(f.Id) || f.Category == FormatCategory.Video;
+                    if (formats.All(f => !CanPixels(f)))
+                        return new(PresetUse.Unusable, _loc["error.unsupported_source"]);
+
+                    if (formats.Any(f => f.Category == FormatCategory.Video))
+                    {
+                        bool HasVideoRoute(RoutePlanner planner) => formats.Where(f => f.Category == FormatCategory.Video).Any(f => planner.CanConvert(f.Id, f.Id));
+                        if (HasVideoRoute(installedPlanner()))
+                            return new(PresetUse.Usable, null);
+                        return packageEnabling(HasVideoRoute) is { } pkg
+                            ? new(PresetUse.NeedsPackage, _loc.Format("engine.reason.needs_package", pkg.Name))
+                            : new(PresetUse.Unusable, _loc["error.no_route"]);
+                    }
+
+                    return new(PresetUse.Usable, null);
+
+                case PromptKind.Percent:
+                case PromptKind.Quality:
+                case PromptKind.Dpi:
+                    if (formats.All(f => !WritableSingleFrameRasterFormats.Contains(f.Id)))
+                        return new(PresetUse.Unusable, _loc["error.unsupported_source"]);
+                    return new(PresetUse.Usable, null);
+
+                default:
+                    return new(PresetUse.Unusable, _loc["error.unsupported_source"]);
+            }
         }
 
         // "Compress into one archive" packs the files as they are, so any file works, even of an unknown type.
