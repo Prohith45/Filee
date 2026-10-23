@@ -754,7 +754,7 @@ public class DonutFlipTests
             var front = Images.PresetIds.ToList();
             var switcher = window.GetVisualDescendants().OfType<Avalonia.Controls.Border>().Single(b => b.Name == "FaceSwitch");
             var faces = switcher.GetVisualDescendants().OfType<Avalonia.Controls.RadioButton>().ToList();
-            Assert.Equal(2, faces.Count);
+            Assert.Equal(3, faces.Count);
             Assert.True(faces[0].IsChecked);
             Assert.Equal(front, page.DonutItems.Select(i => i.Id));
 
