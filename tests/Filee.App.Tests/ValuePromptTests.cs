@@ -170,10 +170,11 @@ public class ValuePromptTests
             promptWindow.Confirm();
             RenderTests.Pump();
 
-            // Job started and added to Jobs and ToastJobs
+            // Job started and added to Jobs, and donut progress ring is active
             var jobVm = conversions.Jobs.FirstOrDefault(j => !before.Contains(j.Job.Id));
             Assert.NotNull(jobVm);
-            Assert.Contains(conversions.ToastJobs, t => t.Job.Id == jobVm.Job.Id);
+            Assert.True(radial.IsVisible);
+            Assert.True(radial.Window!.DonutControl.IsInProgressMode);
             Assert.Equal(30 * 1024, jobVm.Job.Preset.TargetSizeBytes);
             Assert.False(jobVm.Job.Preset.IsPrompt);
             Assert.Equal(PresetKind.Convert, jobVm.Job.Preset.Kind);

@@ -81,17 +81,18 @@ public sealed partial class DonutMenu
     public event EventHandler? ProgressClicked;
 
     /// <summary>Switches to progress mode: collapses the slices into the centre and shows the progress ring.</summary>
-    public void BeginProgress()
+    public void BeginProgress(bool skipCollapse = false)
     {
         ResetProgress();
         _progressMode = true;
         _closing = false;
         _closeCallback = null;
         _openClock = double.MaxValue;
-        if (!Motion.Enabled)
+        if (skipCollapse || !Motion.Enabled)
         {
             _collapseClock = CollapseEnd;
-            _ring.Value = 1;
+            _ring.Value = skipCollapse && Motion.Enabled ? 0 : 1;
+            _ring.Velocity = skipCollapse && Motion.Enabled ? 2 : 0;
             _ringClock = 0;
         }
         StartAnimation();

@@ -391,8 +391,16 @@ public sealed class RadialController(
             if (answer is null)
                 return;
             PromptApplier.Apply(preset, answer, loc);
-            conversions.Start(sources, preset, showInToast: true, web: web);
+            var job = conversions.Start(sources, preset, showInToast: false, web: web);
             web = null; // the conversion owns the browser drop now
+            if (job is null)
+                return;
+
+            var window = EnsureWindow();
+            if (near.HasValue)
+                window.Position = near.Value;
+            _converted = true;
+            ShowProgress(job, skipCollapse: true);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -422,16 +430,27 @@ public sealed class RadialController(
 
     // ───────── Progress ring ─────────
 
-    private void ShowProgress(JobViewModel job)
+    private void ShowProgress(JobViewModel job, bool skipCollapse = false)
     {
-        var donut = _window!.DonutControl;
+        var window = EnsureWindow();
+        if (!window.IsVisible)
+            window.Show();
+        if (window.TryGetPlatformHandle()?.Handle is { } handle)
+            platform.RaiseTopmost(handle);
+        _visible = true;
+
+        var donut = window.DonutControl;
         _dropped = true;
         _progressJob = job;
         viewModel.ProgressJob = job;
         _lastRingJob = job;
-        donut.BeginProgress();
+        donut.BeginProgress(skipCollapse);
         donut.SetProgress(job.Progress / 100);
         job.PropertyChanged += OnProgressJobChanged;
+        if (!job.IsRunning)
+        {
+            OnProgressJobChanged(job, new PropertyChangedEventArgs(nameof(JobViewModel.IsRunning)));
+        }
         _handOffTimer = DispatcherTimer.RunOnce(() =>
         {
             if (_progressJob == job && job.IsRunning)
