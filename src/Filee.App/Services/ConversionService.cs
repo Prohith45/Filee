@@ -68,7 +68,7 @@ public sealed class ConversionService
     /// <returns>The job's view model, or null when there was nothing to convert.</returns>
     public JobViewModel? Start(IReadOnlyList<string> files, Preset preset, bool showInToast = true, WebDrop? web = null)
     {
-        if (files.Count == 0 || preset.IsGroup || preset.IsTool)
+        if (files.Count == 0 || preset.IsGroup || preset.IsTool || preset.IsPrompt)
         {
             web?.Dispose();
             return null;

@@ -88,6 +88,20 @@ public sealed class JobQueue : IAsyncDisposable
         job.State = JobState.Running;
         Notify(job);
 
+        if (job.Preset.IsPrompt || job.Preset.IsTool || job.Preset.IsGroup)
+        {
+            _log.LogError("Preset {Preset} of kind {Kind} cannot be run directly", job.Preset.Id, job.Preset.Kind);
+            job.State = JobState.Failed;
+            foreach (var f in job.Files)
+            {
+                f.State = FileState.Failed;
+                f.ErrorDetail = "Cannot run non-conversion preset directly.";
+            }
+            Notify(job);
+            JobFinished?.Invoke(this, job);
+            return;
+        }
+
         var workDir = Path.Combine(DefaultWorkRoot, job.Id);
         Directory.CreateDirectory(workDir);
         try

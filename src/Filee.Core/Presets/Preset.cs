@@ -22,6 +22,23 @@ public enum PresetKind
     /// never offered where a conversion is picked.
     /// </summary>
     Tool,
+
+    /// <summary>
+    /// Asks the user for a value (target size, pixel dimensions, etc.) before converting. Like a group or tool,
+    /// never offered where a direct conversion is picked.
+    /// </summary>
+    Prompt,
+}
+
+/// <summary>What value to ask the user for before converting, when a preset's kind is <see cref="PresetKind.Prompt"/>.</summary>
+public enum PromptKind
+{
+    None,
+    TargetSize,
+    Pixels,
+    Percent,
+    Quality,
+    Dpi,
 }
 
 /// <summary>
@@ -176,6 +193,17 @@ public sealed class Preset
     [JsonIgnore]
     public bool IsTool => Kind == PresetKind.Tool;
 
+    /// <summary>What value to ask the user for before converting, when <see cref="Kind"/> is <see cref="PresetKind.Prompt"/>.</summary>
+    [JsonConverter(typeof(LenientEnumJsonConverter<PromptKind>))]
+    public PromptKind Prompt { get; set; } = PromptKind.None;
+
+    /// <summary>Maximum output size in bytes; null = off.</summary>
+    public long? TargetSizeBytes { get; set; }
+
+    /// <summary>True for a <see cref="PresetKind.Prompt"/>.</summary>
+    [JsonIgnore]
+    public bool IsPrompt => Kind == PresetKind.Prompt;
+
     /// <summary>Creates a new random preset id.</summary>
     public static string NewId() => Guid.NewGuid().ToString("N")[..12];
 
@@ -194,6 +222,8 @@ public sealed class Preset
         Trace = Trace.Clone(),
         Output = Output.Clone(),
         Kind = Kind,
+        Prompt = Prompt,
+        TargetSizeBytes = TargetSizeBytes,
         SubPresetIds = [.. SubPresetIds],
     };
 }
@@ -209,6 +239,8 @@ public enum ResizeMode
     LongEdge,
     /// <summary>Scale to <see cref="ImageOptions.Width"/> pixels wide, height in proportion (never upscales).</summary>
     Width,
+    /// <summary>Fit within <see cref="ImageOptions.ExactWidth"/> x <see cref="ImageOptions.ExactHeight"/> pixels, keeping aspect ratio by default (never upscales).</summary>
+    Exact,
 }
 
 /// <summary>How an image is turned, after its EXIF orientation is applied.</summary>
@@ -268,6 +300,15 @@ public sealed class ImageOptions
 
     /// <summary>Target width in pixels when <see cref="Resize"/> is <see cref="ResizeMode.Width"/>.</summary>
     public int Width { get; set; } = 1200;
+
+    /// <summary>Target width in pixels when <see cref="Resize"/> is <see cref="ResizeMode.Exact"/>.</summary>
+    public int? ExactWidth { get; set; }
+
+    /// <summary>Target height in pixels when <see cref="Resize"/> is <see cref="ResizeMode.Exact"/>.</summary>
+    public int? ExactHeight { get; set; }
+
+    /// <summary>Whether to preserve aspect ratio when resizing in <see cref="ResizeMode.Exact"/> mode (default true).</summary>
+    public bool KeepAspect { get; set; } = true;
 
     /// <summary>Output DPI written into the file. <c>null</c> keeps the source value.</summary>
     public int? Dpi { get; set; }

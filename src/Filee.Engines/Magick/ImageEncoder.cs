@@ -203,8 +203,19 @@ internal static class ImageEncoder
         ResizeMode.Percent when options.ResizePercent > 0 => options.ResizePercent / 100.0,
         ResizeMode.LongEdge when options.LongEdge > 0 => Math.Min(1, options.LongEdge / Math.Max(width, height)),
         ResizeMode.Width when options.Width > 0 => Math.Min(1, options.Width / width),
+        ResizeMode.Exact when options.ExactWidth > 0 || options.ExactHeight > 0 => CalculateExactScale(width, height, options),
         _ => 1,
     };
+
+    private static double CalculateExactScale(double width, double height, ImageOptions options)
+    {
+        var targetW = options.ExactWidth.GetValueOrDefault(0);
+        var targetH = options.ExactHeight.GetValueOrDefault(0);
+        if (targetW <= 0 && targetH <= 0) return 1;
+        if (targetW <= 0) return Math.Min(1, targetH / height);
+        if (targetH <= 0) return Math.Min(1, targetW / width);
+        return Math.Min(1, Math.Min(targetW / width, targetH / height));
+    }
 
     /// <summary>Turns and mirrors an image as <paramref name="options"/> say (part of <see cref="ApplyOptions"/>).</summary>
     public static void Turn(IMagickImage<byte> image, ImageOptions options)
@@ -285,6 +296,26 @@ internal static class ImageEncoder
                 break;
             case ResizeMode.Width when options.Width > 0 && image.Width > options.Width:
                 image.Resize((uint)options.Width, (uint)Math.Max(1, Math.Round(image.Height * (double)options.Width / image.Width)));
+                break;
+            case ResizeMode.Exact when options.ExactWidth > 0 || options.ExactHeight > 0:
+                var targetW = options.ExactWidth.GetValueOrDefault(0);
+                var targetH = options.ExactHeight.GetValueOrDefault(0);
+                if (options.KeepAspect)
+                {
+                    var scale = CalculateExactScale(image.Width, image.Height, options);
+                    if (scale < 1)
+                    {
+                        var nw = (uint)Math.Max(1, Math.Round(image.Width * scale));
+                        var nh = (uint)Math.Max(1, Math.Round(image.Height * scale));
+                        image.Resize(nw, nh);
+                    }
+                }
+                else
+                {
+                    var nw = targetW > 0 ? (uint)Math.Min((double)targetW, image.Width) : (uint)image.Width;
+                    var nh = targetH > 0 ? (uint)Math.Min((double)targetH, image.Height) : (uint)image.Height;
+                    image.Resize(new MagickGeometry(nw, nh) { IgnoreAspectRatio = true });
+                }
                 break;
         }
         FitFormat(image, targetFormat);
