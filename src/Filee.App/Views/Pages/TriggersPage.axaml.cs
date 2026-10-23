@@ -22,4 +22,11 @@ public partial class TriggersPage : UserControl
         if (sender is ToggleButton { DataContext: FlipOptionsViewModel vm } && vm.IsRecording)
             e.Handled = vm.Record(e.Key);
     }
+
+    /// <summary>While "Record" is on, the next key pressed on the button flips to tools from now on.</summary>
+    private void OnToolsRecorderKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is ToggleButton { DataContext: FlipOptionsViewModel vm } && vm.IsRecordingTools)
+            e.Handled = vm.RecordTools(e.Key);
+    }
 }

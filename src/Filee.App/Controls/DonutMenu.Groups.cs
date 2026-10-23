@@ -212,7 +212,24 @@ public sealed partial class DonutMenu
             string.Equals(KeyNames.ToHookName(key), flipKey, StringComparison.OrdinalIgnoreCase))
         {
             // Also when there is nothing to flip to: the key never does something else (Tab: move the focus).
-            Flip();
+            if (ActiveFace == DonutFace.Tools)
+                LeaveTools();
+            else
+                Flip();
+            return true;
+        }
+        if (!IsEditMode && !_progressMode && ToolsKey is { } toolsKey &&
+            string.Equals(KeyNames.ToHookName(key), toolsKey, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ActiveFace == DonutFace.Tools)
+                LeaveTools();
+            else
+                ShowTools();
+            return true;
+        }
+        if (!IsEditMode && !_progressMode && ActiveFace == DonutFace.Tools && key is Key.Escape or Key.Back && ExpandedChildren is null)
+        {
+            LeaveTools();
             return true;
         }
         if (!HandleKeyCore(key))

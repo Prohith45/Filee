@@ -168,16 +168,31 @@ public sealed partial class FlipOptionsViewModel : ObservableObject
     /// <summary>Why the last key pressed while recording wasn't taken, or null.</summary>
     [ObservableProperty] private string? _error;
 
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(ToolsKeyText))] private bool _isRecordingTools;
+
+    /// <summary>Why the last key pressed while recording the tools key wasn't taken, or null.</summary>
+    [ObservableProperty] private string? _toolsError;
+
     [ObservableProperty] private bool _flipWithWheel;
 
     /// <summary>The key that flips now ("Tab", "F2"), "Press a key…" while recording, or "—" for none.</summary>
     public string KeyText => IsRecording ? _loc["triggers.recording_key"]
         : Donut.EffectiveFlipKey(_store.Settings.Triggers) is { } key ? KeyNames.Display(key) : "—";
 
+    /// <summary>The key that shows tools now ("R"), "Press a key…" while recording, or "—" for none.</summary>
+    public string ToolsKeyText => IsRecordingTools ? _loc["triggers.recording_key"]
+        : Donut.EffectiveToolsKey(_store.Settings.Triggers) is { } key ? KeyNames.Display(key) : "—";
+
     partial void OnIsRecordingChanged(bool value)
     {
         if (value)
             Error = null;
+    }
+
+    partial void OnIsRecordingToolsChanged(bool value)
+    {
+        if (value)
+            ToolsError = null;
     }
 
     partial void OnFlipWithWheelChanged(bool value)
@@ -201,6 +216,23 @@ public sealed partial class FlipOptionsViewModel : ObservableObject
         Donut.FlipKey = key;
         _save();
         OnPropertyChanged(nameof(KeyText));
+        OnPropertyChanged(nameof(ToolsKeyText));
+    }
+
+    [RelayCommand]
+    private void ResetToolsKey() => SetToolsKey(DonutSettings.DefaultToolsKey);
+
+    [RelayCommand]
+    private void ClearToolsKey() => SetToolsKey("");
+
+    private void SetToolsKey(string key)
+    {
+        IsRecordingTools = false;
+        ToolsError = null;
+        Donut.ToolsKey = key;
+        _save();
+        OnPropertyChanged(nameof(ToolsKeyText));
+        OnPropertyChanged(nameof(KeyText));
     }
 
     /// <summary>
@@ -219,13 +251,36 @@ public sealed partial class FlipOptionsViewModel : ObservableObject
             IsRecording = false;
             return true;
         }
-        if (!DonutSettings.IsFlipKeyAllowed(name, _store.Settings.Triggers))
+        var tools = Donut.EffectiveToolsKey(_store.Settings.Triggers);
+        if (!DonutSettings.IsFlipKeyAllowed(name, _store.Settings.Triggers) || string.Equals(name, tools, StringComparison.OrdinalIgnoreCase))
         {
             Error = _loc.Format("triggers.flip_key_taken", KeyNames.Display(name));
             IsRecording = false;
             return true;
         }
         SetKey(name);
+        return true;
+    }
+
+    public bool RecordTools(Key key)
+    {
+        if (!IsRecordingTools || key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift
+                or Key.RightShift or Key.LWin or Key.RWin)
+            return false;
+        if (KeyNames.ToHookName(key) is not { } name)
+        {
+            ToolsError = _loc["triggers.flip_key_unknown"];
+            IsRecordingTools = false;
+            return true;
+        }
+        var flip = Donut.EffectiveFlipKey(_store.Settings.Triggers);
+        if (!DonutSettings.IsFlipKeyAllowed(name, _store.Settings.Triggers) || string.Equals(name, flip, StringComparison.OrdinalIgnoreCase))
+        {
+            ToolsError = _loc.Format("triggers.flip_key_taken", KeyNames.Display(name));
+            IsRecordingTools = false;
+            return true;
+        }
+        SetToolsKey(name);
         return true;
     }
 }

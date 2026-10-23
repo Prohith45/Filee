@@ -118,6 +118,95 @@ public class DonutFlipTests
     });
 
     [AvaloniaFact]
+    public void R_flips_to_the_tools_face_and_back_in_click_mode() => With(animations: true, back: null, () =>
+    {
+        var (vm, window, donut) = OpenClickMode();
+        var front = vm.Items.Select(i => i.Id).ToList();
+        Assert.True(vm.CanShowTools);
+        Assert.Equal(DonutFace.Front, vm.ActiveFace);
+
+        // Press R -> flips to Tools
+        Assert.True(donut.HandleKey(Key.R));
+        Assert.True(donut.IsFlipping);
+        donut.Advance(DonutMenu.FlipDuration * 0.6); // past edge-on
+        Assert.Equal(DonutFace.Tools, vm.ActiveFace);
+        Assert.Contains("reduce-size", vm.Items.Select(i => i.Id));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.False(donut.IsFlipping);
+
+        // Press R again -> flips back to Front
+        Assert.True(donut.HandleKey(Key.R));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Front, vm.ActiveFace);
+        Assert.Equal(front, vm.Items.Select(i => i.Id));
+        window.Close();
+    });
+
+    [AvaloniaFact]
+    public void Tab_from_tools_face_returns_to_previous_face() => With(animations: true, back: null, () =>
+    {
+        var (vm, window, donut) = OpenClickMode();
+        var front = vm.Items.Select(i => i.Id).ToList();
+
+        // 1. From Front -> R -> Tools -> Tab -> Front
+        Assert.True(donut.HandleKey(Key.R));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Tools, vm.ActiveFace);
+
+        Assert.True(donut.HandleKey(Key.Tab));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Front, vm.ActiveFace);
+        Assert.Equal(front, vm.Items.Select(i => i.Id));
+
+        // 2. From Front -> Tab -> Back -> R -> Tools -> Tab -> Back
+        Assert.True(donut.HandleKey(Key.Tab));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Back, vm.ActiveFace);
+
+        Assert.True(donut.HandleKey(Key.R));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Tools, vm.ActiveFace);
+
+        Assert.True(donut.HandleKey(Key.Tab));
+        donut.Advance(DonutMenu.FlipDuration);
+        Assert.Equal(DonutFace.Back, vm.ActiveFace);
+        Assert.Equal(ImageBack, vm.Items.Select(i => i.Id));
+        window.Close();
+    });
+
+    [AvaloniaFact]
+    public void R_is_ignored_when_CanShowTools_is_false() => With(animations: false, back: null, () =>
+    {
+        var images = Images;
+        var savedTools = images.ToolPresetIds;
+        try
+        {
+            images.ToolPresetIds = [];
+            var (vm, window, donut) = OpenClickMode();
+            Assert.False(vm.CanShowTools);
+            Assert.False(donut.ShowTools());
+            Assert.Equal(DonutFace.Front, vm.ActiveFace);
+            window.Close();
+        }
+        finally
+        {
+            images.ToolPresetIds = savedTools;
+        }
+    });
+
+    [Fact]
+    public void Flip_key_and_tools_key_cannot_be_equal()
+    {
+        var settings = new DonutSettings { FlipKey = "Tab", ToolsKey = "Tab" };
+        var gestures = Array.Empty<TriggerGesture>();
+        Assert.Equal("Tab", settings.EffectiveFlipKey(gestures));
+        Assert.Null(settings.EffectiveToolsKey(gestures));
+
+        settings.ToolsKey = "R";
+        Assert.Equal("R", settings.EffectiveToolsKey(gestures));
+    }
+
+    [AvaloniaFact]
     public void The_window_hands_tab_to_the_donut() => With(animations: false, back: null, () =>
     {
         var (vm, window, _) = OpenClickMode();

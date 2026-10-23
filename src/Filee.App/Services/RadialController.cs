@@ -274,11 +274,16 @@ public sealed class RadialController(
         };
 
         donut.ActiveIndexChanged += (_, index) => viewModel.ShowHint(index, donut.ActiveSubIndex, donut.IsCenterHot);
-        // Drag mode: the flip key and the wheel seen by the global hook (click mode gets them in the focused window).
+        // Drag mode: the flip key, tools key and the wheel seen by the global hook (click mode gets them in the focused window).
         triggers.FlipKeyPressed += (_, _) =>
         {
             if (FlipsFromHook)
                 donut.Flip();
+        };
+        triggers.ToolsKeyPressed += (_, _) =>
+        {
+            if (FlipsFromHook)
+                donut.ShowTools();
         };
         triggers.FlipWheelTurned += (_, _) =>
         {

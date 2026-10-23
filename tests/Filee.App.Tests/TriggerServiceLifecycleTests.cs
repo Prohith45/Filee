@@ -190,6 +190,37 @@ public sealed class TriggerServiceLifecycleTests
         Assert.Equal(2, Settle(() => flips));
     }
 
+    [AvaloniaFact]
+    public void R_tools_key_is_reported_only_while_watched_and_once_per_press()
+    {
+        var provider = new DelayedProvider();
+        provider.AllowExit.Set();
+        using var service = Create(provider, () => { });
+        var tools = 0;
+        service.ToolsKeyPressed += (_, _) => tools++;
+        service.Start();
+        Assert.True(SpinWait.SpinUntil(() => provider.Runs == 1, 2000));
+
+        // The donut is closed: R is none of Filee's business.
+        provider.PostKey(EventType.KeyPressed, KeyCode.VcR);
+        provider.PostKey(EventType.KeyReleased, KeyCode.VcR);
+        Assert.Equal(0, Settle(() => tools));
+
+        service.WatchFlipKey = true;
+        provider.PostKey(EventType.KeyPressed, KeyCode.VcR, EventMask.LeftCtrl);
+        Assert.Equal(1, Settle(() => tools));
+        provider.PostKey(EventType.KeyPressed, KeyCode.VcR); // repeating
+        Assert.Equal(1, Settle(() => tools));
+        provider.PostKey(EventType.KeyReleased, KeyCode.VcR);
+        provider.PostKey(EventType.KeyPressed, KeyCode.VcR);
+        Assert.Equal(2, Settle(() => tools));
+
+        service.WatchFlipKey = false;
+        provider.PostKey(EventType.KeyReleased, KeyCode.VcR);
+        provider.PostKey(EventType.KeyPressed, KeyCode.VcR);
+        Assert.Equal(2, Settle(() => tools));
+    }
+
     /// <summary>Runs the work the hook posted to the UI thread for a moment, then reads the value.</summary>
     [AvaloniaFact]
     public void A_drag_over_a_web_browser_counts_as_over_the_file_manager()

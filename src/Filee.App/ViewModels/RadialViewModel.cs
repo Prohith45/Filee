@@ -28,17 +28,26 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     /// <summary>The other face has a slice for these files: Tab flips to it.</summary>
     [ObservableProperty] private bool _canFlip;
 
+    /// <summary>There is a usable tools face for these files: R flips to it.</summary>
+    [ObservableProperty] private bool _canShowTools;
+
     /// <summary>
     /// "Tab ↻ back" / "Tab ↻ front" in the hub (with the flip key of the settings) while <see cref="CanFlip"/> and a key
     /// or the wheel flips; else null.
     /// </summary>
     [ObservableProperty] private string? _flipHint;
 
+    /// <summary>Hint text for the tools face (e.g. "R ↻ tools").</summary>
+    [ObservableProperty] private string? _toolsHint;
+
     /// <summary>The hint shows a mouse instead of a key: only the wheel flips.</summary>
     [ObservableProperty] private bool _flipHintWheel;
 
     /// <summary>The key that flips the donut (settings name, "Tab"), or null for none.</summary>
     [ObservableProperty] private string? _flipKey;
+
+    /// <summary>The key that flips to the tools face (settings name, "R"), or null for none.</summary>
+    [ObservableProperty] private string? _toolsKey;
 
     /// <summary>A turn of the mouse wheel flips the donut.</summary>
     [ObservableProperty] private bool _flipWithWheel;
@@ -90,12 +99,18 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     // until then). Checking every preset against the files takes as long as for the front (a moment when engines are
     // missing), so the back is checked after the front is on screen, not before (see Load).
     private IReadOnlyList<string> _backIds = [];
+    private IReadOnlyList<string> _toolsIds = [];
     private IReadOnlyList<FileFormat> _formats = [];
     private Face? _back;
+    private Face? _tools;
+    private DonutFace _returnFace = DonutFace.Front;
     private int _loads;
 
+    /// <summary>Which face of the donut is being displayed.</summary>
+    [ObservableProperty] private DonutFace _activeFace = DonutFace.Front;
+
     /// <summary>The back face is showing (after a flip).</summary>
-    public bool IsBackFace { get; private set; }
+    public bool IsBackFace => ActiveFace == DonutFace.Back;
 
     /// <summary>
     /// The preset that slice <paramref name="index"/> converts with, or slice <paramref name="sub"/> of its group's ring;
@@ -129,10 +144,11 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         IsClickMode = false;
         Files = [];
         ApplyAppearance();
-        ReserveSubRing = store.Profiles.Any(profile => HasGroups(profile.PresetIds.Concat(profile.BackPresetIds ?? [])));
+        ReserveSubRing = store.Profiles.Any(profile => HasGroups(profile.PresetIds.Concat(profile.BackPresetIds ?? []).Concat(profile.ToolPresetIds ?? [])));
         _loads++;
-        (_front, _back, _backIds, _formats) = (Face.Empty, Face.Empty, [], []);
-        ShowFace(back: false);
+        (_front, _back, _tools, _backIds, _toolsIds, _formats) = (Face.Empty, Face.Empty, Face.Empty, [], [], []);
+        _returnFace = DonutFace.Front;
+        ShowFace(DonutFace.Front);
         CenterTitle = loc["donut.center_drag"];
         CenterSubtitle = null;
         DonutOpacity = 0;
@@ -159,20 +175,26 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         // Both faces follow the same rule: a slice that can't convert these files is greyed out and says why.
         _front = BuildFace(profile?.PresetIds ?? [], formats);
         (_back, _backIds, _formats) = (null, [.. profile?.BackPresetIds ?? []], formats);
+        (_tools, _toolsIds) = (null, [.. profile?.ToolPresetIds ?? []]);
+        _returnFace = DonutFace.Front;
         var load = ++_loads;
         if (backFace)
         {
-            ShowFace(BackFace().IsUsable);
+            ShowFace(BackFace().IsUsable ? DonutFace.Back : DonutFace.Front);
         }
         else
         {
-            ShowFace(back: false, checkBack: false);
+            ShowFace(DonutFace.Front, checkOther: false);
             // Right after the donut is drawn: until then Tab has nothing to flip to, nor the hub a hint.
-            if (_backIds.Count > 0)
+            if (_backIds.Count > 0 || _toolsIds.Count > 0)
                 Dispatcher.UIThread.Post(() =>
                 {
-                    if (load == _loads && _back is null)
-                        ShowFace(IsBackFace);
+                    if (load == _loads)
+                    {
+                        if (_back is null && _backIds.Count > 0) BackFace();
+                        if (_tools is null && _toolsIds.Count > 0) ToolsFace();
+                        UpdateFaceHints();
+                    }
                 }, DispatcherPriority.Background);
         }
 
@@ -188,37 +210,105 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     /// </summary>
     public bool ToggleFace()
     {
+        if (ActiveFace == DonutFace.Tools)
+            return SwapFace(_returnFace);
+        return SwapFace(ActiveFace == DonutFace.Front ? DonutFace.Back : DonutFace.Front);
+    }
+
+    /// <summary>
+    /// Switches to the specified donut face.
+    /// </summary>
+    public bool SwapFace(DonutFace target)
+    {
+        if (target == DonutFace.Tools)
+        {
+            if (_tools is null)
+                ToolsFace();
+            if (!CanShowTools)
+                return false;
+            if (ActiveFace != DonutFace.Tools)
+                _returnFace = ActiveFace;
+            ShowFace(DonutFace.Tools);
+            CenterSubtitle = IsClickMode ? loc["donut.close_hint"] : null;
+            return true;
+        }
+
+        if (ActiveFace == DonutFace.Tools)
+        {
+            var ret = _returnFace;
+            ShowFace(ret);
+            CenterSubtitle = IsClickMode ? loc["donut.close_hint"] : null;
+            return true;
+        }
+
         if (_back is null)
-            ShowFace(IsBackFace); // asked for before it was checked: check it now
+            BackFace();
         if (!CanFlip)
             return false;
-        ShowFace(!IsBackFace);
+        ShowFace(target);
         CenterSubtitle = IsClickMode ? loc["donut.close_hint"] : null;
         return true;
     }
 
-    /// <summary>Shows a face; <paramref name="checkBack"/> false leaves an unchecked back face (and the flip) for later.</summary>
-    private void ShowFace(bool back, bool checkBack = true)
+    /// <summary>Shows a face; <paramref name="checkOther"/> false leaves an unchecked back/tools face (and hints) for later.</summary>
+    private void ShowFace(DonutFace face, bool checkOther = true)
     {
-        var face = back ? BackFace() : _front;
-        if (IsBackFace != back || !ReferenceEquals(Items, face.Items))
+        var f = face switch
         {
-            IsBackFace = back;
-            Presets = face.Presets;
-            _subPresets = face.SubPresets;
-            Items = face.Items;
+            DonutFace.Back => BackFace(),
+            DonutFace.Tools => ToolsFace(),
+            _ => _front,
+        };
+
+        if (ActiveFace != face || !ReferenceEquals(Items, f.Items))
+        {
+            ActiveFace = face;
+            OnPropertyChanged(nameof(IsBackFace));
+            Presets = f.Presets;
+            _subPresets = f.SubPresets;
+            Items = f.Items;
         }
-        var other = back ? _front : checkBack ? BackFace() : _back;
+
+        UpdateFaceHints(checkOther);
+    }
+
+    private void UpdateFaceHints(bool checkOther = true)
+    {
+        if (ActiveFace == DonutFace.Tools)
+        {
+            CanFlip = true;
+            FlipHint = loc["donut.tools_back"];
+            FlipHintWheel = false;
+            CanShowTools = true;
+            ToolsHint = null;
+            return;
+        }
+
+        var other = ActiveFace == DonutFace.Front
+            ? (checkOther ? BackFace() : _back)
+            : _front;
         CanFlip = other?.IsUsable == true;
+
+        var tools = checkOther ? ToolsFace() : _tools;
+        CanShowTools = tools?.IsUsable == true;
+
         var how = FlipKey is { } key ? KeyNames.Display(key) : "";
         FlipHint = CanFlip && (FlipKey is not null || FlipWithWheel)
-            ? loc.Format(back ? "donut.flip_to_front" : "donut.flip_to_back", how).Trim()
+            ? loc.Format(ActiveFace == DonutFace.Back ? "donut.flip_to_front" : "donut.flip_to_back", how).Trim()
             : null;
         FlipHintWheel = FlipHint is not null && FlipKey is null;
+
+        var toolsHow = ToolsKey is { } tKey ? KeyNames.Display(tKey) : "";
+        ToolsHint = CanShowTools && ToolsKey is not null
+            ? loc.Format("donut.tools_hint", toolsHow).Trim()
+            : null;
     }
 
     /// <summary>The back face's slices for the files, checked now if they weren't yet.</summary>
     private Face BackFace() => _back ??= BuildFace(_backIds, _formats);
+
+    /// <summary>The tools face's slices for the files, checked now if they weren't yet.</summary>
+    private Face ToolsFace() => _tools ??= BuildFace(_toolsIds, _formats);
 
     private bool HasGroups(IEnumerable<string> presetIds) => presetIds.Any(id => store.FindPreset(id)?.IsGroup == true);
 
@@ -294,9 +384,9 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
 
     /// <summary>
     /// Click mode, before the window is placed: room for a group's ring only if this donut has a group, on either face
-    /// (the window must not grow, and the donut move, when it flips).
+    /// or the tools face (the window must not grow, and the donut move, when it flips).
     /// </summary>
-    public void FitToThisDonut() => ReserveSubRing = _front.Items.Any(item => item.IsGroup) || HasGroups(_backIds);
+    public void FitToThisDonut() => ReserveSubRing = _front.Items.Any(item => item.IsGroup) || HasGroups(_backIds) || HasGroups(_toolsIds);
 
     private void ApplyAppearance()
     {
@@ -304,6 +394,7 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         HoleRatio = store.Settings.Donut.HoleRatio;
         SliceOpacity = Math.Clamp(store.Settings.Donut.Opacity, DonutSettings.MinOpacity, 1);
         FlipKey = store.Settings.Donut.EffectiveFlipKey(store.Settings.Triggers);
+        ToolsKey = store.Settings.Donut.EffectiveToolsKey(store.Settings.Triggers);
         FlipWithWheel = store.Settings.Donut.FlipWithWheel;
     }
 }

@@ -140,6 +140,25 @@
         </StackPanel>
         <TextBlock Classes="caption danger" TextWrapping="Wrap" Text="{Binding Error}"
                    IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <Border Height="1" Background="{DynamicResource BorderBrush}" Margin="0,4" />
+        <TextBlock Classes="label" Text="{DynamicResource triggers.tools_title}" />
+        <TextBlock Classes="caption" TextWrapping="Wrap" Text="{DynamicResource triggers.tools_description}" />
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <TextBlock Text="{DynamicResource triggers.key}" VerticalAlignment="Center" Margin="0,0,6,0" />
+          <Border Classes="badge" MinWidth="120" Padding="12,6">
+            <TextBlock Text="{Binding ToolsKeyText}" FontWeight="SemiBold" />
+          </Border>
+          <ToggleButton x:Name="ToolsRecorder" IsChecked="{Binding IsRecordingTools}" KeyDown="OnToolsRecorderKeyDown">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Width="12" Height="12" Data="{StaticResource Icon.Record}" Foreground="{DynamicResource DangerBrush}" />
+              <TextBlock Text="{DynamicResource triggers.record}" />
+            </StackPanel>
+          </ToggleButton>
+          <Button Classes="ghost" Content="{DynamicResource triggers.tools_reset}" Command="{Binding ResetToolsKeyCommand}" />
+          <Button Classes="ghost" Content="{DynamicResource triggers.clear}" Command="{Binding ClearToolsKeyCommand}" />
+        </StackPanel>
+        <TextBlock Classes="caption danger" TextWrapping="Wrap" Text="{Binding ToolsError}"
+                   IsVisible="{Binding ToolsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
         <DockPanel>
           <ToggleSwitch x:Name="FlipWheel" DockPanel.Dock="Right" OnContent="{x:Null}" OffContent="{x:Null}" MinWidth="0"
                         Margin="12,0,0,0" VerticalAlignment="Center" IsChecked="{Binding FlipWithWheel}"

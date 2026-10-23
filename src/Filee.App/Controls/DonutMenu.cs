@@ -132,7 +132,7 @@ public sealed partial class DonutMenu : Control
         AffectsRender<DonutMenu>(HoleRatioProperty, SliceOpacityProperty, CenterTitleProperty, CenterSubtitleProperty,
             IsEditModeProperty, SliceBrushProperty, SliceBorderBrushProperty, CenterBrushProperty, AccentBrushProperty,
             OnAccentBrushProperty, ForegroundProperty, SecondaryForegroundProperty, SuccessBrushProperty, CornerRadiusProperty,
-            CenterHintProperty, CenterHintWheelProperty);
+            CenterHintProperty, CenterHintWheelProperty, ToolsHintProperty);
         ItemsProperty.Changed.AddClassHandler<DonutMenu>((d, _) => d.OnItemsChanged());
     }
 
@@ -925,9 +925,12 @@ public sealed partial class DonutMenu : Control
         var maxWidth = radius * 1.6;
         var title = MakeText(CenterTitle ?? "", bold, 14, Foreground, maxWidth, maxLines: 2);
         var subtitle = MakeText(CenterSubtitle ?? "", regular, 11.5, cancelHot ? DangerBrush : SecondaryForeground, maxWidth, maxLines: 2);
-        // "Tab ↻ back": small, under the rest, a little narrower (the hub is round).
+        // "Tab ↻ back" and "R ↻ tools": small, under the rest, a little narrower (the hub is round).
         var hint = string.IsNullOrEmpty(CenterHint) ? null : MakeText(CenterHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85);
-        var total = title.Height + (string.IsNullOrEmpty(CenterSubtitle) ? 0 : subtitle.Height + 2) + (hint is null ? 0 : hint.Height + 5);
+        var toolsHint = string.IsNullOrEmpty(ToolsHint) ? null : MakeText(ToolsHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85);
+        var total = title.Height + (string.IsNullOrEmpty(CenterSubtitle) ? 0 : subtitle.Height + 2)
+            + (hint is null ? 0 : hint.Height + 4)
+            + (toolsHint is null ? 0 : toolsHint.Height + 3);
         var y = center.Y - total / 2;
         DrawCentered(context, title, center.X, y);
         y += title.Height;
@@ -942,16 +945,24 @@ public sealed partial class DonutMenu : Control
             {
                 if (!CenterHintWheel)
                 {
-                    DrawCentered(context, hint, center.X, y + 5);
+                    DrawCentered(context, hint, center.X, y + 4);
                 }
                 else
                 {
                     // A small mouse in front: "🖱 ↻ back" when the wheel flips and no key does.
                     const double iconWidth = 7, gap = 4;
                     var left = center.X - (hint.Width + iconWidth + gap) / 2;
-                    DrawMouse(context, new Rect(left, y + 5 + (hint.Height - 10) / 2, iconWidth, 10), SecondaryForeground);
-                    DrawCentered(context, hint, center.X + (iconWidth + gap) / 2, y + 5);
+                    DrawMouse(context, new Rect(left, y + 4 + (hint.Height - 10) / 2, iconWidth, 10), SecondaryForeground);
+                    DrawCentered(context, hint, center.X + (iconWidth + gap) / 2, y + 4);
                 }
+            }
+            y += hint.Height + 4;
+        }
+        if (toolsHint is not null)
+        {
+            using (context.PushOpacity(0.85))
+            {
+                DrawCentered(context, toolsHint, center.X, y + 3);
             }
         }
     }

@@ -21,8 +21,8 @@ public partial class RadialWindow : Window
         DragDrop.AddDragOverHandler(Root, OnDragOver);
         DragDrop.AddDragLeaveHandler(Root, OnDragLeave);
         DragDrop.AddDropHandler(Root, OnDrop);
-        // Halfway through a flip (Tab) the donut shows the other face of the profile.
-        Donut.FaceSwapping += (_, _) => (DataContext as RadialViewModel)?.ToggleFace();
+        // Halfway through a flip (Tab / R) the donut shows the requested face of the profile.
+        Donut.FaceSwapping += (_, e) => (DataContext as RadialViewModel)?.SwapFace(e.Target);
     }
 
     public DonutMenu DonutControl => Donut;

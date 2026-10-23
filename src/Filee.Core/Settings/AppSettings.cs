@@ -64,11 +64,19 @@ public sealed class DonutSettings
     /// <summary>The flip key unless the user picks another one (Settings → Shortcuts).</summary>
     public const string DefaultFlipKey = "Tab";
 
+    /// <summary>The tools key unless the user picks another one (Settings → Shortcuts).</summary>
+    public const string DefaultToolsKey = "R";
+
     /// <summary>
     /// The key that flips the open donut to its other face, as a SharpHook key name without "Vc" ("Tab", "F2", "Q");
     /// empty for none. See <see cref="EffectiveFlipKey"/>.
     /// </summary>
     public string FlipKey { get; set; } = DefaultFlipKey;
+
+    /// <summary>
+    /// The key that flips the open donut to the tools face; empty for none. See <see cref="EffectiveToolsKey"/>.
+    /// </summary>
+    public string ToolsKey { get; set; } = DefaultToolsKey;
 
     /// <summary>A turn of the mouse wheel flips the open donut to its other face.</summary>
     public bool FlipWithWheel { get; set; } = true;
@@ -103,6 +111,22 @@ public sealed class DonutSettings
         if (IsFlipKeyAllowed(FlipKey.Trim(), list))
             return FlipKey.Trim();
         return IsFlipKeyAllowed(DefaultFlipKey, list) ? DefaultFlipKey : null;
+    }
+
+    /// <summary>
+    /// The key that flips the open donut to the tools face: must be allowed by <see cref="IsFlipKeyAllowed"/>,
+    /// and different from <see cref="EffectiveFlipKey"/>, else null.
+    /// </summary>
+    public string? EffectiveToolsKey(IEnumerable<TriggerGesture> gestures)
+    {
+        if (string.IsNullOrWhiteSpace(ToolsKey))
+            return null;
+        var list = gestures as IReadOnlyCollection<TriggerGesture> ?? gestures.ToList();
+        var key = ToolsKey.Trim();
+        var flip = EffectiveFlipKey(list);
+        if (IsFlipKeyAllowed(key, list) && !string.Equals(key, flip, StringComparison.OrdinalIgnoreCase))
+            return key;
+        return null;
     }
 
     public DonutSettings Clone() => (DonutSettings)MemberwiseClone();

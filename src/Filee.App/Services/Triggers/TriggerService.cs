@@ -61,17 +61,23 @@ public sealed class TriggerService : IDisposable
     /// <summary>The flip key went down while <see cref="WatchFlipKey"/> was on: flip the donut.</summary>
     public event EventHandler? FlipKeyPressed;
 
+    /// <summary>The tools key went down while <see cref="WatchFlipKey"/> was on: show the tools face.</summary>
+    public event EventHandler? ToolsKeyPressed;
+
     /// <summary>The mouse wheel turned (up or down) while <see cref="WatchFlipKey"/> was on: flip the donut.</summary>
     public event EventHandler? FlipWheelTurned;
 
     private volatile bool _watchFlipKey;
     private volatile string? _flipKey = DonutSettings.DefaultFlipKey;
+    private volatile string? _toolsKey = DonutSettings.DefaultToolsKey;
     private volatile bool _flipWheel = true;
     private bool _flipKeyDown; // hook thread only
+    private bool _toolsKeyDown; // hook thread only
 
     /// <summary>
-    /// On while the drag-mode donut shows files: the flip key (Tab unless set otherwise) and the mouse wheel are
-    /// reported (<see cref="FlipKeyPressed"/>, once per press, not for the repeats of a held key;
+    /// On while the drag-mode donut shows files: the flip key (Tab unless set otherwise), the tools key
+    /// (R unless set otherwise), and the mouse wheel are reported (<see cref="FlipKeyPressed"/>,
+    /// <see cref="ToolsKeyPressed"/>, once per press, not for the repeats of a held key;
     /// <see cref="FlipWheelTurned"/>). During an OS drag the donut's window has no keyboard focus, so they reach Filee
     /// only through the hook. Nothing is swallowed: the hook only listens (it runs on its own thread and can't hold an
     /// event back), Explorer and Finder ignore Tab during a drag, and with the donut closed neither is looked at.
@@ -91,11 +97,23 @@ public sealed class TriggerService : IDisposable
             Post(() => FlipKeyPressed?.Invoke(this, EventArgs.Empty));
     }
 
-    /// <summary>A key went down or up (hook thread): the flip key's state is followed whether or not it is watched.</summary>
+    /// <summary>The tools key went down or up (hook thread).</summary>
+    private void OnToolsKey(bool down)
+    {
+        var repeat = down && _toolsKeyDown;
+        _toolsKeyDown = down;
+        if (down && !repeat && _watchFlipKey)
+            Post(() => ToolsKeyPressed?.Invoke(this, EventArgs.Empty));
+    }
+
+    /// <summary>A key went down or up (hook thread): the flip and tools keys' states are followed whether or not watched.</summary>
     private void OnKey(KeyCode code, bool down)
     {
-        if (_flipKey is { } flip && string.Equals(KeyName(code), flip, StringComparison.OrdinalIgnoreCase))
+        var name = KeyName(code);
+        if (_flipKey is { } flip && string.Equals(name, flip, StringComparison.OrdinalIgnoreCase))
             OnFlipKey(down);
+        if (_toolsKey is { } tools && string.Equals(name, tools, StringComparison.OrdinalIgnoreCase))
+            OnToolsKey(down);
     }
 
     /// <summary>The wheel turned (hook thread). Each notch is reported: the donut keeps one flip per turn.</summary>
@@ -126,6 +144,7 @@ public sealed class TriggerService : IDisposable
         _detector.Configure(settings.Triggers.Where(g => _platform.SupportsSelectionShortcut || g.Kind == TriggerKind.Drag).ToList());
         _detector.Paused = settings.Paused;
         _flipKey = settings.Donut.EffectiveFlipKey(settings.Triggers);
+        _toolsKey = settings.Donut.EffectiveToolsKey(settings.Triggers);
         _flipWheel = settings.Donut.FlipWithWheel;
         _excluded = new HashSet<string>(settings.ExcludedProcesses.Select(p => p.Trim().Replace(".exe", "", StringComparison.OrdinalIgnoreCase)),
             StringComparer.OrdinalIgnoreCase);

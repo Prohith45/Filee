@@ -17,15 +17,44 @@ using Filee.App.Services;
 
 namespace Filee.App.Controls;
 
+/// <summary>Which face of the donut is being displayed.</summary>
+public enum DonutFace
+{
+    Front,
+    Back,
+    Tools,
+}
+
+/// <summary>Event args raised when faces swap halfway through a flip animation.</summary>
+public sealed class FaceSwapEventArgs(DonutFace target) : EventArgs
+{
+    public DonutFace Target { get; } = target;
+}
+
 public sealed partial class DonutMenu
 {
+    /// <summary>The currently active face of the donut menu.</summary>
+    public DonutFace ActiveFace { get; internal set; } = DonutFace.Front;
+
     /// <summary>There is another face with slices for these files: the flip key or the wheel turns to it.</summary>
     public static readonly StyledProperty<bool> CanFlipProperty =
         AvaloniaProperty.Register<DonutMenu, bool>(nameof(CanFlip));
 
+    /// <summary>There is a tools face with slices for these files: the tools key turns to it.</summary>
+    public static readonly StyledProperty<bool> CanShowToolsProperty =
+        AvaloniaProperty.Register<DonutMenu, bool>(nameof(CanShowTools));
+
     /// <summary>Small line at the bottom of the hub, e.g. "Tab ↻ back" (null for none).</summary>
     public static readonly StyledProperty<string?> CenterHintProperty =
         AvaloniaProperty.Register<DonutMenu, string?>(nameof(CenterHint));
+
+    /// <summary>Hint text for the tools face (e.g. "R ↻ tools").</summary>
+    public static readonly StyledProperty<string?> ToolsHintProperty =
+        AvaloniaProperty.Register<DonutMenu, string?>(nameof(ToolsHint));
+
+    /// <summary>The key that flips to the tools face in click mode (e.g. "R").</summary>
+    public static readonly StyledProperty<string?> ToolsKeyProperty =
+        AvaloniaProperty.Register<DonutMenu, string?>(nameof(ToolsKey));
 
     /// <summary>A small mouse in front of <see cref="CenterHint"/>: the wheel flips (and no key does).</summary>
     public static readonly StyledProperty<bool> CenterHintWheelProperty =
@@ -56,10 +85,16 @@ public sealed partial class DonutMenu
     private bool _swapping;           // FaceSwapping is being handled (Items change for the flip, not for new files)
     private Point? _lastExternalAt;   // where a drag from outside was last seen on the donut
 
+    private DonutFace? _flipTarget;
+    private DonutFace _returnFace = DonutFace.Front;
+
     public bool CanFlip { get => GetValue(CanFlipProperty); set => SetValue(CanFlipProperty, value); }
+    public bool CanShowTools { get => GetValue(CanShowToolsProperty); set => SetValue(CanShowToolsProperty, value); }
     public string? CenterHint { get => GetValue(CenterHintProperty); set => SetValue(CenterHintProperty, value); }
+    public string? ToolsHint { get => GetValue(ToolsHintProperty); set => SetValue(ToolsHintProperty, value); }
     public bool CenterHintWheel { get => GetValue(CenterHintWheelProperty); set => SetValue(CenterHintWheelProperty, value); }
     public string? FlipKey { get => GetValue(FlipKeyProperty); set => SetValue(FlipKeyProperty, value); }
+    public string? ToolsKey { get => GetValue(ToolsKeyProperty); set => SetValue(ToolsKeyProperty, value); }
     public bool FlipWithWheel { get => GetValue(FlipWithWheelProperty); set => SetValue(FlipWithWheelProperty, value); }
 
     /// <summary>
@@ -84,10 +119,10 @@ public sealed partial class DonutMenu
     }
 
     /// <summary>
-    /// The donut is edge-on (at once without animations): the owner shows the other face now by changing
+    /// The donut is edge-on (at once without animations): the owner shows the requested face now by changing
     /// <see cref="Items"/>, <see cref="CanFlip"/> and <see cref="CenterHint"/>.
     /// </summary>
-    public event EventHandler? FaceSwapping;
+    public event EventHandler<FaceSwapEventArgs>? FaceSwapping;
 
     /// <summary>A flip is running.</summary>
     internal bool IsFlipping => _flipClock >= 0;
@@ -96,11 +131,11 @@ public sealed partial class DonutMenu
     internal double FlipScale => _flipClock < 0 ? 1 : Math.Abs(Math.Cos(Math.PI * Math.Min(_flipClock / FlipDuration, 1)));
 
     /// <summary>
-    /// Turns the donut over to its other face (Tab), folding an open group's ring away first. Without animations the
-    /// faces swap at once. Returns false when there is nothing to flip to (<see cref="CanFlip"/>), in the editor or
-    /// while the donut shows a conversion's progress.
+    /// Turns the donut over to its other face (Tab or R), folding an open group's ring away first. Without animations the
+    /// faces swap at once. Returns false when there is nothing to flip to (<see cref="CanFlip"/> or <see cref="CanShowTools"/>),
+    /// in the editor or while the donut shows a conversion's progress.
     /// </summary>
-    public bool Flip()
+    public bool Flip(DonutFace? target = null)
     {
         if (IsEditMode || _progressMode || _closing)
             return false;
@@ -110,8 +145,26 @@ public sealed partial class DonutMenu
             _flipQueued = !_flipQueued;
             return true;
         }
-        if (!CanFlip)
+
+        var next = target ?? (ActiveFace == DonutFace.Tools
+            ? _returnFace
+            : (ActiveFace == DonutFace.Front ? DonutFace.Back : DonutFace.Front));
+
+        if (next == DonutFace.Tools)
+        {
+            if (!CanShowTools)
+                return false;
+        }
+        else if (ActiveFace == DonutFace.Tools)
+        {
+            // Leaving tools face is always allowed
+        }
+        else if (!CanFlip)
+        {
             return false;
+        }
+
+        _flipTarget = next;
         CollapseGroup();
         if (!Motion.Enabled)
         {
@@ -123,6 +176,12 @@ public sealed partial class DonutMenu
         StartAnimation();
         return true;
     }
+
+    /// <summary>Flips to the tools face.</summary>
+    public bool ShowTools() => ActiveFace == DonutFace.Tools ? LeaveTools() : Flip(DonutFace.Tools);
+
+    /// <summary>Leaves the tools face and returns to the previous face.</summary>
+    public bool LeaveTools() => Flip(_returnFace);
 
     /// <summary>
     /// The second half of a flip for items that were already swapped (the editor's Front / Back switch): the ring
@@ -185,12 +244,20 @@ public sealed partial class DonutMenu
     private void SwapFaces()
     {
         _flipSwapped = true;
+        var target = _flipTarget ?? (ActiveFace == DonutFace.Tools
+            ? _returnFace
+            : (ActiveFace == DonutFace.Front ? DonutFace.Back : DonutFace.Front));
+        if (target == DonutFace.Tools && ActiveFace != DonutFace.Tools)
+            _returnFace = ActiveFace;
+        ActiveFace = target;
+        _flipTarget = null;
+
         var dragAt = _lastExternalAt;
         var pointer = _keyboardHold ? null : _lastPointer;
         _swapping = true;
         try
         {
-            FaceSwapping?.Invoke(this, EventArgs.Empty);
+            FaceSwapping?.Invoke(this, new FaceSwapEventArgs(target));
         }
         finally
         {
