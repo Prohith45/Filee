@@ -161,7 +161,7 @@ public sealed class UserDataStore
         if (!CanResetProfile(profile))
             return false;
         var builtIn = BuiltInData.CreateProfiles().Single(p => p.Id == profile.Id);
-        RestoreBuiltInPresets([.. builtIn.PresetIds, .. builtIn.BackPresetIds ?? []]);
+        RestoreBuiltInPresets([.. builtIn.PresetIds, .. builtIn.BackPresetIds ?? [], .. builtIn.ToolPresetIds ?? []]);
 
         // Extensions checked on a mixed-selection profile only limit that profile; they don't claim files.
         var claimed = Profiles.Where(p => p != profile && !p.IsFallback)
@@ -170,8 +170,9 @@ public sealed class UserDataStore
         profile.Name = "";
         profile.NameKey = builtIn.NameKey;
         profile.Extensions = builtIn.IsFallback ? builtIn.Extensions : builtIn.Extensions.Where(e => !claimed.Contains(e)).ToList();
-        profile.PresetIds = builtIn.PresetIds;
-        profile.BackPresetIds = builtIn.BackPresetIds ?? [];
+        profile.PresetIds = [.. builtIn.PresetIds];
+        profile.BackPresetIds = builtIn.BackPresetIds is null ? null : [.. builtIn.BackPresetIds];
+        profile.ToolPresetIds = builtIn.ToolPresetIds is null ? null : [.. builtIn.ToolPresetIds];
         if (profile.IsFallback != builtIn.IsFallback)
         {
             profile.IsFallback = builtIn.IsFallback;
@@ -225,6 +226,7 @@ public sealed class UserDataStore
         }
         // A bundle from a Filee before back faces has none: a built-in donut gets its default one, as on loading.
         SettingsMigrations.AddBackFaces(Presets, bundle.Profiles);
+        SettingsMigrations.AddToolFaces(Presets, bundle.Profiles);
         // Mixed-selection profiles stay mixed: several may exist, and the catch-all is the first one with nothing
         // checked, so an imported one added at the end never replaces ours.
         foreach (var profile in bundle.Profiles)
@@ -245,6 +247,8 @@ public sealed class UserDataStore
             profile.PresetIds = profile.PresetIds.Where(ids.Contains).Distinct().Take(ToolbarProfile.MaxSlices).ToList();
             // No back face known by now (a donut the user made, read from an older file): it has none.
             profile.BackPresetIds = (profile.BackPresetIds ?? []).Where(ids.Contains).Distinct().Take(ToolbarProfile.MaxSlices).ToList();
+            if (profile.ToolPresetIds is not null)
+                profile.ToolPresetIds = profile.ToolPresetIds.Where(ids.Contains).Distinct().Take(ToolbarProfile.MaxSlices).ToList();
         }
         // A Filee from before groups drops "kind" (and the presets) when it saves a group, which comes back as a
         // conversion to "group": still a group, now an empty one, rather than a conversion that can never run.
@@ -794,6 +798,17 @@ internal static class SettingsMigrations
         // v38: Tajima embroidery designs (.dst) learn the vector donut; custom claims stay put.
         if (from < 38)
             changed |= LearnExtensions(profiles, out _, ["dst"]);
+        // v39: prompt presets (reduce size, resize pixels, resize percent, set quality, set dpi) and the tools face
+        //      on built-in donuts (images, pdf, video, audio).
+        if (from < 39)
+        {
+            foreach (var preset in BuiltInData.PromptPresets().Where(p => presets.All(existing => existing.Id != p.Id)))
+            {
+                presets.Add(preset);
+                changed = true;
+            }
+            changed |= AddToolFaces(presets, profiles);
+        }
         return changed;
     }
 
@@ -882,6 +897,27 @@ internal static class SettingsMigrations
         {
             profile.BackPresetIds = (defaults[profile.Id].BackPresetIds ?? []).Where(ids.Contains).ToList();
             changed = true;
+        }
+        return changed;
+    }
+
+    /// <summary>
+    /// Gives each built-in donut without a tools face (<see cref="ToolbarProfile.ToolPresetIds"/> null) its default one,
+    /// with only the presets in <paramref name="presets"/>. Donuts the user made are left with null.
+    /// Returns true when one was added.
+    /// </summary>
+    internal static bool AddToolFaces(List<Preset> presets, IEnumerable<ToolbarProfile> profiles)
+    {
+        var defaults = BuiltInData.CreateProfiles().ToDictionary(p => p.Id);
+        var ids = presets.Select(p => p.Id).ToHashSet();
+        var changed = false;
+        foreach (var profile in profiles)
+        {
+            if (profile.ToolPresetIds is null && defaults.TryGetValue(profile.Id, out var def) && def.ToolPresetIds is { Count: > 0 })
+            {
+                profile.ToolPresetIds = def.ToolPresetIds.Where(ids.Contains).ToList();
+                changed = true;
+            }
         }
         return changed;
     }

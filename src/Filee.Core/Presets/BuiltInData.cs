@@ -92,6 +92,7 @@ public static class BuiltInData
         .. ModelPresets(),
         .. GeoPresets(),
         .. TracePresets(),
+        .. PromptPresets(),
     ];
 
     /// <summary>
@@ -424,6 +425,58 @@ public static class BuiltInData
     ];
 
     /// <summary>
+    /// Tools face presets (added in settings schema 39): prompts that ask for a value before converting.
+    /// </summary>
+    public static List<Preset> PromptPresets() =>
+    [
+        new()
+        {
+            Id = "reduce-size",
+            NameKey = "preset.reduce_size",
+            TargetFormat = SameAsSource,
+            Kind = PresetKind.Prompt,
+            Prompt = PromptKind.TargetSize,
+            Output = { FileNamePattern = "{name}_reduced" },
+        },
+        new()
+        {
+            Id = "resize-pixels",
+            NameKey = "preset.resize_pixels",
+            TargetFormat = SameAsSource,
+            Kind = PresetKind.Prompt,
+            Prompt = PromptKind.Pixels,
+            Output = { FileNamePattern = "{name}_resized" },
+        },
+        new()
+        {
+            Id = "resize-percent",
+            NameKey = "preset.resize_percent",
+            TargetFormat = SameAsSource,
+            Kind = PresetKind.Prompt,
+            Prompt = PromptKind.Percent,
+            Output = { FileNamePattern = "{name}_resized" },
+        },
+        new()
+        {
+            Id = "set-quality",
+            NameKey = "preset.set_quality",
+            TargetFormat = SameAsSource,
+            Kind = PresetKind.Prompt,
+            Prompt = PromptKind.Quality,
+            Output = { FileNamePattern = "{name}_quality" },
+        },
+        new()
+        {
+            Id = "set-dpi",
+            NameKey = "preset.set_dpi",
+            TargetFormat = SameAsSource,
+            Kind = PresetKind.Prompt,
+            Prompt = PromptKind.Dpi,
+            Output = { FileNamePattern = "{name}_dpi" },
+        },
+    ];
+
+    /// <summary>
     /// Creates the default toolbar profiles. Each has a back face (Tab or the mouse wheel flips the open donut to it, settings schema 30)
     /// with presets for its files that aren't on its front: less common formats and tools (rotate, merge, compress
     /// into one ZIP, ...). The fronts are as they were before back faces.
@@ -438,6 +491,7 @@ public static class BuiltInData
             // Full (ToolbarProfile.MaxSlices): "Extract Live Photo video" stays in the library, on no donut.
             BackPresetIds = ["tool-crop", "rotate", "flip", "remove-background", "trim-transparent", "grayscale", "to-avif", "to-gif", "merge-pdf",
                 "compress-image", "remove-metadata", "zip-all"],
+            ToolPresetIds = ["reduce-size", "resize-pixels", "resize-percent", "set-quality", "set-dpi"],
         },
         new()
         {
@@ -445,6 +499,7 @@ public static class BuiltInData
             Extensions = ["pdf"],
             PresetIds = [.. PdfDonut],
             BackPresetIds = ["compress-pdf", "to-webp", "to-tiff", "to-html", "to-odt", "to-rtf", "to-azw3", "to-cbz", "remove-metadata", "zip-all"],
+            ToolPresetIds = ["reduce-size"],
         },
         new()
         {
@@ -535,6 +590,7 @@ public static class BuiltInData
             // misses its slice doesn't start it. Live / Motion Photos of a clip are there too.
             BackPresetIds = ["mp4-av1", "to-webp", "extract-frames-png", "extract-frames-jpg", "live-photo-iphone", "motion-photo-android",
                 "extract-audio", "to-wav", "to-flac", "compress-video", "merge-videos", "zip-all"],
+            ToolPresetIds = ["reduce-size", "resize-pixels"],
         },
         new()
         {
@@ -542,6 +598,7 @@ public static class BuiltInData
             Extensions = ExtensionsOf(FormatCategory.Audio),
             PresetIds = ["to-mp3", "mp3-128", "to-m4a", "to-wav", "to-flac", "to-ogg", "to-opus", "to-aac"],
             BackPresetIds = ["to-alac", "compress-audio", "merge-audio", "remove-metadata", "zip-all"],
+            ToolPresetIds = ["reduce-size"],
         },
         new()
         {

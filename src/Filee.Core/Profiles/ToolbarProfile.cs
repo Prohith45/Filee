@@ -44,6 +44,12 @@ public sealed class ToolbarProfile
     /// </summary>
     public List<string>? BackPresetIds { get; set; }
 
+    /// <summary>
+    /// Preset ids of the tools face, which R flips the open donut to: tools that ask for a value before converting.
+    /// Empty or null: the donut has no tools face, R does nothing.
+    /// </summary>
+    public List<string>? ToolPresetIds { get; set; }
+
     /// <summary>Returns true if the extension (with or without dot) belongs to this profile.</summary>
     public bool Matches(string extension) =>
         Extensions.Contains(extension.TrimStart('.'), StringComparer.OrdinalIgnoreCase);
@@ -57,6 +63,7 @@ public sealed class ToolbarProfile
         IsFallback = IsFallback,
         PresetIds = [.. PresetIds],
         BackPresetIds = BackPresetIds is null ? null : [.. BackPresetIds],
+        ToolPresetIds = ToolPresetIds is null ? null : [.. ToolPresetIds],
     };
 }
 
