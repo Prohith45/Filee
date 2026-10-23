@@ -21,6 +21,7 @@ internal sealed record CliOptions
     public bool KeepDates { get; set; }
 
     public bool Zip { get; set; }
+    public long? TargetSizeBytes { get; set; }
     public double? SettleSeconds { get; set; }
     public string? Error { get; set; }
 
@@ -100,6 +101,16 @@ internal sealed record CliOptions
                 case "--zip":
                     options.Zip = true;
                     break;
+                case "--target-size":
+                    var size = Value();
+                    if (size is not null)
+                    {
+                        if (SizeText.TryParse(size, out var bytes) && bytes > 0)
+                            options.TargetSizeBytes = bytes;
+                        else
+                            options.Error ??= "--target-size must be a size like 200kb or 1.5mb.";
+                    }
+                    break;
                 case "--settle":
                     var settle = Value();
                     if (settle is not null)
@@ -125,7 +136,9 @@ internal sealed record CliOptions
         options.Error ??= options.Command switch
         {
             "convert" when options.Inputs.Count == 0 => "Give at least one file or folder to convert.",
-            "convert" or "watch" when options.To is null == (options.Preset is null) => "Use either --to <format> or --preset <preset>.",
+            "convert" when options.TargetSizeBytes is null && (options.To is null == (options.Preset is null)) => "Use either --to <format> or --preset <preset>.",
+            "convert" when options.To is not null && options.Preset is not null => "Use either --to <format> or --preset <preset>.",
+            "watch" when options.To is null == (options.Preset is null) => "Use either --to <format> or --preset <preset>.",
             "watch" when options.Inputs.Count != 1 => "Give exactly one folder to watch.",
             _ => null,
         };

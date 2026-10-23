@@ -383,4 +383,49 @@ public sealed class CliTests : IDisposable
         Assert.Equal(Cli.UsageError, code);
         Assert.Contains("is an interactive tool, not a conversion", errors);
     }
+
+    private string LargeJpeg(string name)
+    {
+        var path = Path.Combine(_folder, name);
+        using var img = new ImageMagick.MagickImage("gradient:#C04020-#2060C0", 1200, 900);
+        img.AddNoise(ImageMagick.NoiseType.Gaussian, 0.5);
+        img.Quality = 95;
+        img.Write(path, ImageMagick.MagickFormat.Jpeg);
+        return path;
+    }
+
+    [Fact]
+    public async Task Converts_with_target_size_option()
+    {
+        var source = LargeJpeg("photo.jpg");
+        var (code, output, errors) = await Run("convert", source, "--target-size", "100kb");
+
+        Assert.Equal(Cli.Success, code);
+        Assert.Equal("", errors);
+        Assert.Contains("Converted 1 of 1", output);
+        var expectedOut = Path.Combine(_folder, "photo_reduced.jpg");
+        Assert.True(File.Exists(expectedOut));
+        Assert.True(new FileInfo(expectedOut).Length <= 100 * 1024);
+    }
+
+    [Fact]
+    public async Task Refuses_unsupported_format_for_target_size()
+    {
+        var doc = Path.Combine(_folder, "notes.txt");
+        File.WriteAllText(doc, "Hello world");
+        var (code, _, errors) = await Run("convert", doc, "--target-size", "50kb");
+
+        Assert.Equal(Cli.UsageError, code);
+        Assert.Contains("target size reduction is not supported", errors);
+    }
+
+    [Fact]
+    public async Task Refuses_invalid_target_size_syntax()
+    {
+        var source = Png("photo.png");
+        var (code, _, errors) = await Run("convert", source, "--target-size", "invalid-size");
+
+        Assert.Equal(Cli.UsageError, code);
+        Assert.Contains("--target-size must be a size like 200kb or 1.5mb", errors);
+    }
 }

@@ -69,6 +69,24 @@ internal static class Cli
             return NothingToDo;
         }
 
+        if (options.TargetSizeBytes is not null)
+        {
+            if (options.To is not null && !TargetSizeSupport.IsSupported(options.To))
+            {
+                errors.WriteLine($"filee: target size reduction is not supported for target format '{options.To}'.");
+                return UsageError;
+            }
+            foreach (var path in files)
+            {
+                var ext = Path.GetExtension(path);
+                if (!TargetSizeSupport.IsSupported(ext))
+                {
+                    errors.WriteLine($"filee: target size reduction is not supported for '{Path.GetFileName(path)}'.");
+                    return UsageError;
+                }
+            }
+        }
+
         var job = await RunJobAsync(files, preset, host, options.Json || options.Quiet ? null : output, cancellationToken);
         var done = job.Files.Count(f => f.State == FileState.Done);
         var failed = job.Files.Count(f => f.State is FileState.Failed or FileState.Cancelled);
@@ -235,9 +253,9 @@ internal static class Cli
             }
             preset = new Preset { TargetFormat = format.Id };
         }
-        else
+        else if (options.Preset is not null)
         {
-            var wanted = options.Preset!;
+            var wanted = options.Preset;
             Preset? Find(IEnumerable<Preset> presets) =>
                 presets.FirstOrDefault(p => string.Equals(p.Id, wanted, StringComparison.OrdinalIgnoreCase))
                 ?? presets.FirstOrDefault(p => string.Equals(host.Texts.DisplayName(p), wanted, StringComparison.OrdinalIgnoreCase));
@@ -265,12 +283,33 @@ internal static class Cli
             }
             if (found.IsPrompt)
             {
-                errors.WriteLine($"filee: '{wanted}' asks for a value before converting; use it from the donut or pass --target-size.");
-                return null;
+                if (found.Prompt == PromptKind.TargetSize && options.TargetSizeBytes is not null)
+                {
+                    // Value supplied via --target-size option
+                }
+                else
+                {
+                    errors.WriteLine($"filee: '{wanted}' asks for a value before converting; use it from the donut or pass --target-size.");
+                    return null;
+                }
             }
             preset = found.Clone();
         }
+        else if (options.TargetSizeBytes is not null)
+        {
+            preset = new Preset
+            {
+                TargetFormat = BuiltInData.SameAsSource,
+                Output = { FileNamePattern = "{name}_reduced" },
+            };
+        }
+        else
+        {
+            return null;
+        }
         preset = host.Store.Settings.WithDefaultOutput(preset);
+        if (options.TargetSizeBytes is { } targetBytes)
+            preset.TargetSizeBytes = targetBytes;
         if (options.Quality is { } quality)
             preset.Image.Quality = quality;
         if (options.Conflict is { } conflict)

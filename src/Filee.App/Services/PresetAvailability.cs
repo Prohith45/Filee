@@ -113,10 +113,7 @@ public sealed class PresetAvailability
             switch (preset.Prompt)
             {
                 case PromptKind.TargetSize:
-                    bool CanTargetSize(FileFormat f) => f.Id == "pdf" || TargetSizeImageFormats.Contains(f.Id)
-                        || f.Category == FormatCategory.Video || LossyAudioFormats.Contains(f.Id);
-
-                    if (formats.All(f => !CanTargetSize(f)))
+                    if (formats.All(f => !TargetSizeSupport.IsSupported(f)))
                         return new(PresetUse.Unusable, _loc["error.size_target_unsupported"]);
 
                     bool NeedsFfmpeg(FileFormat f) => f.Category == FormatCategory.Video || LossyAudioFormats.Contains(f.Id);

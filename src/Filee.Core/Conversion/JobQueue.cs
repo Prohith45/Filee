@@ -660,6 +660,9 @@ public sealed class JobQueue : IAsyncDisposable
             : job.Preset.TargetFormat == BuiltInData.SameAsSource ? source.Id
             : job.Preset.TargetFormat;
 
+        if (finalOutput && job.Preset.TargetSizeBytes is not null && !TargetSizeSupport.IsSupported(source))
+            return Fail(file, "error.size_target_unsupported", source.Id);
+
         // "Save every frame": a video becomes a folder of pictures in one step of its own; "Extract Live/Motion Photo
         // video" likewise takes a photo's video, and "Live / Motion Photo" makes one of a video. Never for an
         // intermediate file, and never on the way to another format (video → JPG is otherwise one still frame, photo →
