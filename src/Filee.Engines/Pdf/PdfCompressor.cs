@@ -45,11 +45,30 @@ internal static class PdfCompressor
         _ => (150, 65),
     };
 
+    /// <summary>Ladder of (dpi, quality) rungs used for target-size bisection.</summary>
+    public static readonly (int Dpi, int Quality)[] LadderRungs =
+    [
+        (300, 85),
+        (200, 75),
+        (150, 65),
+        (110, 55),
+        (96, 50),
+        (72, 45),
+        (60, 35),
+        (50, 30),
+    ];
+
     /// <summary>Shrinks <paramref name="document"/>; save it afterwards.</summary>
     /// <param name="keepMetadata">False drops the XMP metadata of pages, pictures and forms.</param>
     public static void Compress(PdfDocument document, PdfCompression level, bool keepMetadata, CancellationToken cancellationToken)
     {
         var (dpi, quality) = Settings(level);
+        Compress(document, dpi, quality, keepMetadata, cancellationToken);
+    }
+
+    /// <summary>Shrinks <paramref name="document"/> using custom DPI and JPEG quality; save it afterwards.</summary>
+    public static void Compress(PdfDocument document, int dpi, int quality, bool keepMetadata, CancellationToken cancellationToken)
+    {
         var done = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
         foreach (var (image, use) in PdfPictureUses.Find(document))
         {

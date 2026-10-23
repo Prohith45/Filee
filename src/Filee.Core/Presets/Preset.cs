@@ -521,6 +521,9 @@ public sealed class MediaOptions
     /// <summary>Audio bitrate in kbit/s for lossy audio; 0 uses a good default for the format.</summary>
     public int AudioBitrateKbps { get; set; }
 
+    /// <summary>Target video bitrate in kbit/s calculated from target size; 0 = normal CRF/quality encoding.</summary>
+    public int TargetVideoKbps { get; set; }
+
     /// <summary>Drop the audio track of a video.</summary>
     public bool RemoveAudio { get; set; }
 

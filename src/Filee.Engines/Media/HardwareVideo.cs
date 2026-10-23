@@ -164,8 +164,13 @@ internal static class HardwareVideo
     /// Main 10 and AV1), the source's HDR colour tags, and the <c>hvc1</c> tag Apple players need for HEVC in MP4/MOV.
     /// AV1 needs no tag (<c>av01</c> in MP4; MKV and WebM have none).
     /// </summary>
-    public static List<string> CodecArguments(HardwareEncoder encoder, string target, MediaQuality quality, VideoStreamInfo video, int maxHeight)
+    public static List<string> CodecArguments(HardwareEncoder encoder, string target, MediaQuality quality, VideoStreamInfo video, int maxHeight, int targetVideoKbps = 0)
     {
+        if (targetVideoKbps > 0)
+        {
+            return ["-c:v", encoder.Name, "-b:v", $"{targetVideoKbps}k", "-maxrate", $"{(int)(1.1 * targetVideoKbps)}k", "-bufsize", $"{2 * targetVideoKbps}k"];
+        }
+
         var codec = encoder.Codec;
         var av1 = codec == "av1";
         var tenBit = TenBit(codec, video);

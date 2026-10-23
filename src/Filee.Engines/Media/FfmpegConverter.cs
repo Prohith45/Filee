@@ -134,19 +134,106 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         if (step.FrameSequence)
             return await FrameSequenceWriter.ConvertAsync(ffmpeg, step, input, info, progress, cancellationToken);
 
+        // A PNG is a still picture (from the image engines), shown for a few seconds.
+        var still = step.From == "png";
+
+        var media = step.Preset.Media;
+
+        if (step.Preset.TargetSizeBytes is { } targetBytes)
+        {
+            if (File.Exists(input))
+            {
+                var srcLen = new FileInfo(input).Length;
+                if (srcLen <= targetBytes)
+                {
+                    step.Notice?.Invoke("notice.size_already_small");
+                    return [];
+                }
+            }
+
+            if (step.To is "gif" or "apng" || (still && !MediaEncoding.VideoTargets.ContainsKey(step.To)))
+                throw new ConversionRefusedException("error.size_target_animation");
+
+            if (MediaEncoding.VideoTargets.ContainsKey(step.To))
+            {
+                var durationSec = info.Duration?.TotalSeconds ?? 0;
+                if (durationSec <= 0)
+                    throw new ConversionRefusedException("error.size_target_too_small", "0");
+
+                var hasAudio = info.AudioTracks.Count > 0;
+                var sourceAudioKbps = hasAudio && info.AudioTracks[0].Bitrate > 0 ? (int)(info.AudioTracks[0].Bitrate / 1000) : 128;
+                var audioKbps = hasAudio && !media.RemoveAudio ? Math.Min(sourceAudioKbps, 128) : 0;
+
+                // 3% container overhead
+                var bits = targetBytes * 8.0 * 0.97;
+                var videoKbps = (int)Math.Floor((bits / durationSec - audioKbps * 1000.0) / 1000.0);
+
+                var width = info.Video?.Width ?? 1920;
+                var height = info.Video?.Height ?? 1080;
+                var fps = info.Video?.FrameRate is > 0 and < 240 ? info.Video.FrameRate : 30.0;
+                var floor = (int)(0.06 * width * height * fps / 1000.0);
+
+                int[] heightSteps = [1080, 720, 480, 360, 240];
+                int targetHeight = 0;
+
+                while (videoKbps < floor && height > 240)
+                {
+                    var nextH = heightSteps.FirstOrDefault(h => h < height);
+                    if (nextH == 0) break;
+                    var w = (int)Math.Round((double)width * nextH / height);
+                    floor = (int)(0.06 * w * nextH * fps / 1000.0);
+                    height = nextH;
+                    targetHeight = nextH;
+                }
+
+                if (videoKbps < floor || videoKbps < 50)
+                    throw new ConversionRefusedException("error.size_target_too_small", $"{Math.Max(floor, 50)} kbps");
+
+                if (targetHeight > 0 && (media.MaxHeight <= 0 || media.MaxHeight > targetHeight))
+                    media.MaxHeight = targetHeight;
+
+                media.TargetVideoKbps = videoKbps;
+                if (audioKbps > 0)
+                    media.AudioBitrateKbps = audioKbps;
+            }
+            else if (MediaEncoding.AudioTargets.ContainsKey(step.To))
+            {
+                var durationSec = info.Duration?.TotalSeconds ?? 0;
+                if (durationSec <= 0)
+                    throw new ConversionRefusedException("error.size_target_too_small", "0");
+
+                var rawKbps = (targetBytes * 8.0 * 0.98 / durationSec) / 1000.0;
+                if (rawKbps < 24)
+                    throw new ConversionRefusedException("error.size_target_too_small", "24 kbps");
+
+                var kbps = (int)Math.Clamp(Math.Round(rawKbps), 24, 320);
+                if (info.AudioTracks.Count > 0 && info.AudioTracks[0].Bitrate > 0)
+                {
+                    var srcAudioKbps = (int)(info.AudioTracks[0].Bitrate / 1000);
+                    if (kbps >= srcAudioKbps)
+                    {
+                        step.Notice?.Invoke("notice.size_already_small");
+                        return [];
+                    }
+                }
+
+                media.AudioBitrateKbps = kbps;
+            }
+            else
+            {
+                throw new ConversionRefusedException("error.size_target_unsupported", step.To.ToUpperInvariant());
+            }
+        }
+
         var output = step.Output.Allocate(FormatRegistry.Get(step.To).PrimaryExtension);
         if (output is null)
             return [];
-
-        // A PNG is a still picture (from the image engines), shown for a few seconds.
-        var still = step.From == "png";
 
         // Album art for targets FFmpeg can't put a picture stream into (Ogg, Matroska): prepared on the side.
         var cover = !still && info.CoverStreamIndex is { } coverStream && MediaEncoding.AudioTargets.ContainsKey(step.To)
             ? await CoverArt.PrepareAsync(ffmpeg, input, coverStream, step.To, step.WorkDirectory, cancellationToken)
             : null;
 
-        var media = step.Preset.Media;
         // "Remove metadata": the streams as they are, in the same format, without tags.
         if (media.RemoveMetadata && step.From == step.To && !still
             && (MediaEncoding.VideoTargets.ContainsKey(step.To) || MediaEncoding.AudioTargets.ContainsKey(step.To)))
@@ -189,6 +276,31 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         {
             await RunWithFallbackAsync(passes, hardware, Plan,
                 planned => RunPassesAsync(ffmpeg, planned, output, duration, progress, cancellationToken), output, _logger, cancellationToken);
+
+            if (step.Preset.TargetSizeBytes is { } targetSize && MediaEncoding.VideoTargets.ContainsKey(step.To))
+            {
+                if (File.Exists(output))
+                {
+                    var actualSize = new FileInfo(output).Length;
+                    if (actualSize > targetSize * 1.03)
+                    {
+                        var newKbps = (int)Math.Max(50, media.TargetVideoKbps * ((double)targetSize / actualSize) * 0.95);
+                        if (newKbps < media.TargetVideoKbps)
+                        {
+                            media.TargetVideoKbps = newKbps;
+                            passes = Plan(hardware);
+                            await RunWithFallbackAsync(passes, hardware, Plan,
+                                planned => RunPassesAsync(ffmpeg, planned, output, duration, progress, cancellationToken), output, _logger, cancellationToken);
+                            actualSize = new FileInfo(output).Length;
+                        }
+                    }
+
+                    if (actualSize > targetSize)
+                    {
+                        step.Notice?.Invoke("notice.size_target_not_reached");
+                    }
+                }
+            }
         }
         catch
         {

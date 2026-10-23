@@ -1,6 +1,8 @@
 // Raster image ↔ raster image conversion with ImageMagick (Magick.NET, Apache-2.0).
 
+using System.IO;
 using Filee.Core.Conversion;
+using Filee.Core.Presets;
 using Filee.Engines.Infrastructure;
 using ImageMagick;
 
@@ -84,6 +86,9 @@ public sealed class MagickImageConverter : IConverter, ITiffMerger, IImageTransf
         IProgress<double>? progress, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (step.Preset.TargetSizeBytes is { } targetBytes)
+            return WriteTargetSize(images, from, step, targetBytes, progress, cancellationToken);
+
         progress?.Report(0.3);
 
         // A JPG has no transparent border to trim: re-encoding it would only cost a JPEG generation.
@@ -107,6 +112,212 @@ public sealed class MagickImageConverter : IConverter, ITiffMerger, IImageTransf
 
         var written = ImageEncoder.Write(frames, step.To, step.Output, step.Preset.Image, step.InputPath, animation);
         progress?.Report(1);
+        return written;
+    }
+
+    private static IReadOnlyList<string> WriteTargetSize(MagickImageCollection images, string from, ConversionStep step,
+        long targetBytes, IProgress<double>? progress, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report(0.1);
+
+        // Multi-frame or animation refusal
+        var animation = ImageEncoder.KeepsAnimation(from, step.To);
+        if (animation || images.Count > 1 || (step.From == "png" && Apng.IsAnimated(step.InputPath)) || from is "gif" or "apng")
+            throw new ConversionRefusedException("error.size_target_animation");
+
+        // Target larger than source: write nothing, report notice
+        if (File.Exists(step.InputPath))
+        {
+            var srcSize = new FileInfo(step.InputPath).Length;
+            if (srcSize <= targetBytes)
+            {
+                step.Notice?.Invoke("notice.size_already_small");
+                return [];
+            }
+        }
+
+        var to = step.To.ToLowerInvariant();
+        var isLossy = to is "jpg" or "jpeg" or "webp" or "avif" or "jxl";
+        var isIndexedOrLossless = to is "png" or "bmp" or "tiff";
+        if (!isLossy && !isIndexedOrLossless)
+            throw new ConversionRefusedException("error.size_target_unsupported", step.To.ToUpperInvariant());
+
+        var frames = ImageEncoder.SelectFrames(images, from, step.To);
+        var frame = frames[0];
+        ImageEncoder.ApplyOptions(frame, step.Preset.Image, step.To);
+        if (step.Preset.Image.TrimTransparent)
+            ImageEncoder.TrimTransparentBorders(frame);
+
+        var magickFormat = ImageEncoder.ToMagickFormat(step.To);
+        var origWidth = frame.Width;
+        var origHeight = frame.Height;
+        var pixelCount = (long)origWidth * origHeight;
+
+        // Proxy scaling for very large images (> 100 MP)
+        var useProxy = pixelCount > 100_000_000;
+
+        if (isLossy)
+        {
+            var minQ = to is "jpg" or "jpeg" ? 40 : 30;
+            var maxQ = (int)Math.Min(95, Math.Max(minQ, frame.Quality > 0 ? (int)frame.Quality : 92));
+
+            long ProbeQuality(int q, IMagickImage<byte> img)
+            {
+                using var clone = img.Clone();
+                clone.Quality = (uint)q;
+                using var ms = new MemoryStream();
+                clone.Write(ms, magickFormat);
+                return ms.Length;
+            }
+
+            int bestQ = -1;
+            long bestQSize = 0;
+
+            if (useProxy)
+            {
+                using var proxy = frame.Clone();
+                proxy.Resize((uint)(origWidth / 2), (uint)(origHeight / 2));
+                var proxyTarget = (long)(targetBytes * 0.3);
+                var proxyFit = SizeFitter.FitInteger(minQ, maxQ, proxyTarget, (q, ct) => ProbeQuality(q, proxy), cancellationToken);
+                var testQ = proxyFit.BestValue ?? minQ;
+                var fullSize = ProbeQuality(testQ, frame);
+                if (fullSize <= targetBytes)
+                {
+                    bestQ = testQ;
+                    bestQSize = fullSize;
+                }
+            }
+
+            if (bestQ < 0)
+            {
+                var qFit = SizeFitter.FitInteger(minQ, maxQ, targetBytes, (q, ct) => ProbeQuality(q, frame), cancellationToken);
+                if (qFit.BestValue is { } qVal)
+                {
+                    bestQ = qVal;
+                    bestQSize = qFit.BestSize;
+                }
+            }
+
+            if (bestQ >= minQ && bestQSize <= targetBytes)
+            {
+                frame.Quality = (uint)bestQ;
+            }
+            else
+            {
+                // Phase B: Scale bisection (5..100) at base quality 60
+                int baseQ = 60;
+                frame.Quality = (uint)baseQ;
+
+                long ProbeScale(int percent)
+                {
+                    using var clone = frame.Clone();
+                    var w = Math.Max(1, (int)Math.Round(origWidth * percent / 100.0));
+                    var h = Math.Max(1, (int)Math.Round(origHeight * percent / 100.0));
+                    clone.Resize((uint)w, (uint)h);
+                    using var ms = new MemoryStream();
+                    clone.Write(ms, magickFormat);
+                    return ms.Length;
+                }
+
+                var scaleFit = SizeFitter.FitInteger(5, 100, targetBytes, (p, ct) => ProbeScale(p), cancellationToken);
+                if (scaleFit.BestValue is { } bestPct)
+                {
+                    var w = Math.Max(1, (int)Math.Round(origWidth * bestPct / 100.0));
+                    var h = Math.Max(1, (int)Math.Round(origHeight * bestPct / 100.0));
+                    frame.Resize((uint)w, (uint)h);
+                    frame.Quality = (uint)baseQ;
+                }
+                else
+                {
+                    frame.Quality = (uint)minQ;
+                    var w = Math.Max(1, (int)Math.Round(origWidth * 0.05));
+                    var h = Math.Max(1, (int)Math.Round(origHeight * 0.05));
+                    frame.Resize((uint)w, (uint)h);
+                    using var ms = new MemoryStream();
+                    frame.Write(ms, magickFormat);
+                    if (ms.Length > targetBytes)
+                        throw new ConversionRefusedException("error.size_target_too_small", SizeText.Format(targetBytes));
+                }
+            }
+        }
+        else // Lossless / Indexed: png, bmp, tiff
+        {
+            bool quantized = false;
+            using (var qTest = frame.Clone())
+            {
+                qTest.Quantize(new QuantizeSettings { Colors = 256 });
+                using var ms = new MemoryStream();
+                qTest.Write(ms, magickFormat);
+                if (ms.Length <= targetBytes)
+                {
+                    frame.Quantize(new QuantizeSettings { Colors = 256 });
+                    quantized = true;
+                    step.Notice?.Invoke("notice.size_quantized");
+                }
+            }
+
+            using (var testMs = new MemoryStream())
+            {
+                frame.Write(testMs, magickFormat);
+                if (testMs.Length > targetBytes)
+                {
+                    long ProbeScale(int percent)
+                    {
+                        using var clone = frame.Clone();
+                        var w = Math.Max(1, (int)Math.Round(origWidth * percent / 100.0));
+                        var h = Math.Max(1, (int)Math.Round(origHeight * percent / 100.0));
+                        clone.Resize((uint)w, (uint)h);
+                        if (!quantized)
+                            clone.Quantize(new QuantizeSettings { Colors = 256 });
+                        using var s = new MemoryStream();
+                        clone.Write(s, magickFormat);
+                        return s.Length;
+                    }
+
+                    var scaleFit = SizeFitter.FitInteger(5, 100, targetBytes, (p, ct) => ProbeScale(p), cancellationToken);
+                    if (scaleFit.BestValue is { } bestPct)
+                    {
+                        var w = Math.Max(1, (int)Math.Round(origWidth * bestPct / 100.0));
+                        var h = Math.Max(1, (int)Math.Round(origHeight * bestPct / 100.0));
+                        frame.Resize((uint)w, (uint)h);
+                        if (!quantized)
+                        {
+                            frame.Quantize(new QuantizeSettings { Colors = 256 });
+                            step.Notice?.Invoke("notice.size_quantized");
+                        }
+                    }
+                    else
+                    {
+                        throw new ConversionRefusedException("error.size_target_too_small", SizeText.Format(targetBytes));
+                    }
+                }
+            }
+        }
+
+        progress?.Report(0.7);
+        var written = ImageEncoder.Write([frame], step.To, step.Output, step.Preset.Image, step.InputPath, animation: false);
+
+        if (written.Count > 0 && File.Exists(written[0]))
+        {
+            var len = new FileInfo(written[0]).Length;
+            if (len > targetBytes)
+            {
+                for (int attempt = 0; attempt < 5 && len > targetBytes; attempt++)
+                {
+                    var newW = Math.Max(1, (int)(frame.Width * 0.9));
+                    var newH = Math.Max(1, (int)(frame.Height * 0.9));
+                    frame.Resize((uint)newW, (uint)newH);
+                    ImageEncoder.WriteImage(frame, written[0], step.To);
+                    len = new FileInfo(written[0]).Length;
+                }
+
+                if (len > targetBytes)
+                    step.Notice?.Invoke("notice.size_target_not_reached");
+            }
+        }
+
+        progress?.Report(1.0);
         return written;
     }
 }

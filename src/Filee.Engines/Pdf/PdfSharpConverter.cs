@@ -36,10 +36,11 @@ public sealed class PdfSharpConverter : IConverter, IPdfMerger, IImageTransforme
 
     public Task<IReadOnlyList<string>> ConvertAsync(ConversionStep step, IProgress<double>? progress, CancellationToken cancellationToken) =>
         step.From != "pdf" ? Task.Run(() => ImageToPdf(step, progress, cancellationToken), cancellationToken)
+        : step.Preset.TargetSizeBytes is not null || step.Preset.Pdf.Compression != PdfCompression.None
+            ? Task.Run(() => CompressAsync(step, progress, cancellationToken), cancellationToken)
         : step.Preset.Pdf is { Compression: PdfCompression.None, RemoveMetadata: true, SplitPages: false, PageRange: "" }
             ? Task.Run(() => WithoutMetadata(step, progress, cancellationToken), cancellationToken)
-        : step.Preset.Pdf.Compression == PdfCompression.None ? Task.Run(() => SplitOrExtract(step, progress, cancellationToken), cancellationToken)
-        : Task.Run(() => CompressAsync(step, progress, cancellationToken), cancellationToken);
+        : Task.Run(() => SplitOrExtract(step, progress, cancellationToken), cancellationToken);
 
     public Task MergeAsync(IReadOnlyList<string> inputPaths, string outputPath, CancellationToken cancellationToken) =>
         Task.Run(() =>
@@ -227,22 +228,116 @@ public sealed class PdfSharpConverter : IConverter, IPdfMerger, IImageTransforme
         for (var i = 0; i < parts.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
+            if (step.Preset.TargetSizeBytes is { } targetBytes && File.Exists(parts[i].Plain))
+            {
+                var srcLen = new FileInfo(parts[i].Plain).Length;
+                if (srcLen <= targetBytes)
+                {
+                    step.Notice?.Invoke("notice.size_already_small");
+                    continue;
+                }
+            }
+
             var output = step.Output.Allocate("pdf", parts[i].Suffix);
             if (output is null)
                 continue;
-            anySmaller |= await CompressFileAsync(parts[i].Plain, output, step.Preset, gs, scratch, ct);
+            anySmaller |= await CompressFileAsync(parts[i].Plain, output, step.Preset, gs, scratch, step.Notice, ct);
             written.Add(output);
             progress?.Report((i + 1.0) / parts.Count);
         }
-        if (written.Count > 0 && !anySmaller)
+        if (written.Count > 0 && !anySmaller && step.Preset.TargetSizeBytes is null)
             step.Notice?.Invoke("notice.pdf_not_smaller");
         return written;
     }
 
     /// <summary>Writes the smallest of <paramref name="plain"/> and its compressed versions to <paramref name="output"/>.</summary>
     /// <returns>True when a compressed version was smaller.</returns>
-    private static async Task<bool> CompressFileAsync(string plain, string output, Preset preset, string? gs, string scratch, CancellationToken ct)
+    private static async Task<bool> CompressFileAsync(string plain, string output, Preset preset, string? gs, string scratch, Action<string>? notice, CancellationToken ct)
     {
+        if (preset.TargetSizeBytes is { } targetBytes)
+        {
+            var srcLen = new FileInfo(plain).Length;
+            if (srcLen <= targetBytes)
+            {
+                notice?.Invoke("notice.size_already_small");
+                return false;
+            }
+
+            string? bestPath = null;
+            long bestSize = long.MaxValue;
+            bool reached = false;
+
+            int low = 0, high = PdfCompressor.LadderRungs.Length - 1;
+            while (low <= high)
+            {
+                ct.ThrowIfCancellationRequested();
+                int mid = low + (high - low) / 2;
+                var (dpi, quality) = PdfCompressor.LadderRungs[mid];
+                var rungFile = Path.Combine(scratch, $"{Guid.NewGuid():N}-rung-{dpi}-{quality}.pdf");
+                try
+                {
+                    using (var doc = OpenForChanges(plain))
+                    {
+                        PdfCompressor.Compress(doc, dpi, quality, preset.Image.KeepMetadata, ct);
+                        doc.Save(rungFile);
+                    }
+                    var len = new FileInfo(rungFile).Length;
+                    if (len <= targetBytes)
+                    {
+                        bestPath = rungFile;
+                        bestSize = len;
+                        reached = true;
+                        high = mid - 1;
+                    }
+                    else
+                    {
+                        if (bestPath is null || len < bestSize)
+                        {
+                            bestPath = rungFile;
+                            bestSize = len;
+                        }
+                        low = mid + 1;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    low = mid + 1;
+                }
+            }
+
+            if (!reached && gs is not null)
+            {
+                var gsFile = Path.Combine(scratch, $"{Guid.NewGuid():N}-gs.pdf");
+                try
+                {
+                    await GhostscriptConverter.CompressPdfAsync(gs, plain, gsFile, PdfCompression.Screen, scratch, ct);
+                    var len = new FileInfo(gsFile).Length;
+                    if (len < bestSize)
+                    {
+                        bestPath = gsFile;
+                        bestSize = len;
+                        if (len <= targetBytes)
+                            reached = true;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException) { }
+            }
+
+            if (bestPath is not null && bestSize < srcLen)
+            {
+                File.Copy(bestPath, output, overwrite: true);
+                if (!reached)
+                    notice?.Invoke("notice.size_target_not_reached");
+                return true;
+            }
+
+            File.Copy(plain, output, overwrite: true);
+            if (!reached)
+                notice?.Invoke("notice.size_target_not_reached");
+            notice?.Invoke("notice.pdf_not_smaller");
+            return false;
+        }
+
         var level = preset.Pdf.Compression;
         var candidates = new List<string>();
         Exception? failure = null;

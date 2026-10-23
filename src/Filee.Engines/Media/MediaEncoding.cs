@@ -157,7 +157,26 @@ internal static class MediaEncoding
         if (target == "png")
             return [new FfmpegPass(PosterFrame(input, output, info), 1)];
         if (VideoTargets.TryGetValue(target, out var video))
+        {
+            var videoInfo = info.Video ?? throw new InvalidOperationException("The file has no video stream.");
+            var encoder = VideoEncoder(target, video.VideoCodec!, options.VideoCodec, encoders);
+            if (options.TargetVideoKbps > 0 && encoder == "libx264" && hardware == null)
+            {
+                var passLog = Path.Combine(workDirectory, $"ffmpeg2pass-{Guid.NewGuid():N}");
+                var pal = IsPal(videoInfo.FrameRate);
+                var scale = target is "vob" or "dv" ? DvdOrDvFilter(videoInfo, pal) : ScaleFilter(options.MaxHeight);
+                List<string> pass1Args =
+                [
+                    .. Common, "-i", input, "-map", "0:V:0",
+                    "-vf", scale,
+                    .. VideoCodecArguments(target, "libx264", options.Quality, videoInfo, pal, options.TargetVideoKbps, pass: 1, passLogFile: passLog),
+                    "-an", "-f", "null", "-"
+                ];
+                var pass2Args = Video(input, output, target, video, options, info, encoders, hardware, pass: 2, passLogFile: passLog);
+                return [new FfmpegPass(pass1Args, 0.4), new FfmpegPass(pass2Args, 0.6)];
+            }
             return [new FfmpegPass(Video(input, output, target, video, options, info, encoders, hardware), 1)];
+        }
         if (AudioTargets.TryGetValue(target, out var audio))
             return [new FfmpegPass(Audio(input, output, target, audio, options, info, cover), 1)];
         if (SubtitleTargets.ContainsKey(target))
@@ -227,7 +246,7 @@ internal static class MediaEncoding
             : null;
 
     private static List<string> Video(string input, string output, string target, MediaTarget spec, MediaOptions options, MediaInfo info,
-        IReadOnlySet<string>? encoders, HardwareEncoder? hardware)
+        IReadOnlySet<string>? encoders, HardwareEncoder? hardware, int pass = 0, string? passLogFile = null)
     {
         var video = info.Video ?? throw new InvalidOperationException("The file has no video stream.");
         // An input without sound is fine: the output simply has no audio track. Every track is kept (languages,
@@ -252,13 +271,13 @@ internal static class MediaEncoding
             // VA-API's device is a global option, so it goes before the input.
             args.InsertRange(Common.Length, HardwareVideo.InputArguments(hardware));
             args.AddRange(["-vf", ScaleFilter(options.MaxHeight) + HardwareVideo.FilterSuffix(hardware, HardwareVideo.TenBit(hardware.Codec, video))]);
-            args.AddRange(HardwareVideo.CodecArguments(hardware, target, options.Quality, video, options.MaxHeight));
+            args.AddRange(HardwareVideo.CodecArguments(hardware, target, options.Quality, video, options.MaxHeight, options.TargetVideoKbps));
         }
         else
         {
             var pal = IsPal(video.FrameRate);
             args.AddRange(["-vf", target is "vob" or "dv" ? DvdOrDvFilter(video, pal) : ScaleFilter(options.MaxHeight)]);
-            args.AddRange(VideoCodecArguments(target, VideoEncoder(target, spec.VideoCodec!, options.VideoCodec, encoders), options.Quality, video, pal));
+            args.AddRange(VideoCodecArguments(target, VideoEncoder(target, spec.VideoCodec!, options.VideoCodec, encoders), options.Quality, video, pal, options.TargetVideoKbps, pass, passLogFile));
         }
 
         if (tracks.Count == 0)
@@ -321,7 +340,7 @@ internal static class MediaEncoding
     /// </summary>
     internal static bool CanCopyVideo(string target, VideoStreamInfo video, MediaOptions options)
     {
-        if (options.Quality == MediaQuality.Small || options.MaxHeight > 0 && video.DisplayHeight > Math.Max(16, options.MaxHeight)
+        if (options.TargetVideoKbps > 0 || options.Quality == MediaQuality.Small || options.MaxHeight > 0 && video.DisplayHeight > Math.Max(16, options.MaxHeight)
             || video.Codec is not { } codec || !Remuxable.TryGetValue(target, out var codecs))
             return false;
         var takes = MediaCodecs.Effective(target, options.VideoCodec) switch
@@ -394,8 +413,61 @@ internal static class MediaEncoding
     /// <summary>PAL (25 fps) for 25/50 fps sources, NTSC (29.97 fps) for everything else.</summary>
     internal static bool IsPal(double fps) => Math.Abs(fps - 25) < 0.5 || Math.Abs(fps - 50) < 1 || Math.Abs(fps - 12.5) < 0.3;
 
-    internal static IEnumerable<string> VideoCodecArguments(string target, string codec, MediaQuality quality, VideoStreamInfo video, bool pal)
+    internal static IEnumerable<string> VideoCodecArguments(string target, string codec, MediaQuality quality, VideoStreamInfo video, bool pal,
+        int targetVideoKbps = 0, int pass = 0, string? passLogFile = null)
     {
+        if (targetVideoKbps > 0)
+        {
+            var maxRate = $"{(int)(1.1 * targetVideoKbps)}k";
+            var bufSize = $"{2 * targetVideoKbps}k";
+            var kbps = $"{targetVideoKbps}k";
+
+            switch (codec)
+            {
+                case "libx264":
+                    if (pass > 0 && passLogFile is not null)
+                    {
+                        return ["-c:v", "libx264", "-preset", "medium", "-b:v", kbps, "-pass", pass.ToString(CultureInfo.InvariantCulture), "-passlogfile", passLogFile, "-pix_fmt", "yuv420p"];
+                    }
+                    return ["-c:v", "libx264", "-preset", "medium", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-pix_fmt", "yuv420p"];
+
+                case "libx265":
+                    return ["-c:v", "libx265", "-preset", "medium", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize,
+                            .. HighBitDepthArguments(video), "-x265-params", "log-level=error",
+                            .. target is "mp4" or "m4v" or "mov" ? ["-tag:v", "hvc1"] : Array.Empty<string>()];
+
+                case "libsvtav1":
+                    return ["-c:v", "libsvtav1", "-preset", "8", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, .. HighBitDepthArguments(video)];
+
+                case "libaom-av1":
+                    return ["-c:v", "libaom-av1", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-cpu-used", "6", "-row-mt", "1",
+                            "-tiles", "2x2", .. HighBitDepthArguments(video)];
+
+                case "libvpx-vp9":
+                    return ["-c:v", "libvpx-vp9", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-row-mt", "1",
+                            "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuv420p"];
+
+                case "mpeg4":
+                    return ["-c:v", "mpeg4", "-tag:v", "XVID", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-g", "250", "-bf", "2",
+                            "-pix_fmt", "yuv420p", .. FrameRate(NearestRate(video.FrameRate))];
+
+                case "wmv2":
+                    return ["-c:v", "wmv2", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-g", "250", "-pix_fmt", "yuv420p",
+                            .. FrameRate(NearestRate(video.FrameRate))];
+
+                case "libtheora":
+                    return ["-c:v", "libtheora", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-pix_fmt", "yuv420p",
+                            .. FrameRate(NearestRate(video.FrameRate))];
+
+                case "mpeg2video":
+                    return ["-c:v", "mpeg2video", "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize, "-g", "15", "-bf", "2", "-pix_fmt", "yuv420p",
+                            "-r", BroadcastRate(video.FrameRate)];
+
+                default:
+                    return ["-c:v", codec, "-b:v", kbps, "-maxrate", maxRate, "-bufsize", bufSize];
+            }
+        }
+
         // Constant quantizer for the MPEG-style codecs: 2 is the best useful value, 4 good, 7 visibly compressed.
         var quantizer = Text(Choose(quality, 2, 4, 7));
         switch (codec)

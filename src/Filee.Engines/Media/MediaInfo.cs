@@ -67,7 +67,7 @@ internal sealed record SubtitleStreamInfo(int Index, string? Codec, string? Lang
 
 /// <summary>The first audio stream of a file.</summary>
 /// <param name="Codec">FFmpeg's codec name (<c>aac</c>, <c>opus</c>, …), null when unknown.</param>
-internal sealed record AudioStreamInfo(int Channels, int SampleRate, string? Codec = null);
+internal sealed record AudioStreamInfo(int Channels, int SampleRate, string? Codec = null, int Bitrate = 0);
 
 /// <summary>Summary of a media file.</summary>
 /// <param name="Duration">Playing time, null when the container does not say (raw streams).</param>
@@ -146,7 +146,7 @@ internal sealed record MediaInfo(TimeSpan? Duration, VideoStreamInfo? Video, Aud
                         break;
                     case "audio":
                         audios.Add(new AudioStreamInfo((int)Number(stream, "channels"), (int)Number(stream, "sample_rate"),
-                            Text(stream, "codec_name")));
+                            Text(stream, "codec_name"), (int)Number(stream, "bit_rate")));
                         audio ??= audios[0];
                         break;
                     case "attachment":
