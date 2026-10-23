@@ -129,4 +129,61 @@ public class ValuePromptTests
             if (File.Exists(temp)) File.Delete(temp);
         }
     }
+
+    [AvaloniaFact]
+    public void Prompt_slice_submits_value_and_starts_conversion_job_with_toast()
+    {
+        TestServices.EnsureInitialized();
+        var conversions = AppHost.Get<ConversionService>();
+        var radial = AppHost.Get<RadialController>();
+        var windows = AppHost.Get<WindowService>();
+        var before = conversions.Jobs.Select(j => j.Job.Id).ToHashSet();
+
+        var temp = Path.Combine(Path.GetTempPath(), "test-photo.jpg");
+        try
+        {
+            File.WriteAllBytes(temp, new byte[50 * 1024]);
+            radial.ShowForFiles(400, 400, [temp]);
+            RenderTests.Pump();
+            var donut = radial.Window!.DonutControl;
+
+            Assert.True(donut.ShowTools());
+            donut.FinishAnimations();
+            RenderTests.Pump();
+
+            var vm = (RadialViewModel)radial.Window.DataContext!;
+            var reduceIndex = vm.Items.ToList().FindIndex(i => i.Id == "reduce-size");
+            Assert.True(reduceIndex >= 0);
+
+            donut.SetHover(reduceIndex);
+            Assert.True(donut.HandleKey(Key.Enter));
+            RenderTests.Pump();
+
+            var promptWindow = Assert.IsType<ValuePromptWindow>(windows.ValuePrompt);
+            Assert.True(promptWindow.IsVisible);
+
+            var promptVm = Assert.IsType<ValuePromptViewModel>(promptWindow.DataContext);
+            promptVm.SelectedUnit = "KB";
+            promptVm.TargetSizeText = "30";
+            Assert.True(promptVm.IsValid);
+
+            promptWindow.Confirm();
+            RenderTests.Pump();
+
+            // Job started and added to Jobs and ToastJobs
+            var jobVm = conversions.Jobs.FirstOrDefault(j => !before.Contains(j.Job.Id));
+            Assert.NotNull(jobVm);
+            Assert.Contains(conversions.ToastJobs, t => t.Job.Id == jobVm.Job.Id);
+            Assert.Equal(30 * 1024, jobVm.Job.Preset.TargetSizeBytes);
+            Assert.False(jobVm.Job.Preset.IsPrompt);
+            Assert.Equal(PresetKind.Convert, jobVm.Job.Preset.Kind);
+            Assert.Equal("Reduce to 30 KB", jobVm.Job.PresetDisplayName);
+        }
+        finally
+        {
+            windows.ValuePrompt?.Close();
+            radial.Close(animate: false);
+            if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
 }

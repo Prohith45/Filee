@@ -55,12 +55,14 @@ public partial class ValuePromptWindow : Window
         }
     }
 
-    private void OnOk(object? sender, RoutedEventArgs e)
+    public void Confirm()
     {
         if (DataContext is not ValuePromptViewModel vm || !vm.IsValid) return;
         Result = vm.BuildAnswer();
         Close();
     }
+
+    private void OnOk(object? sender, RoutedEventArgs e) => Confirm();
 
     private void OnCancel(object? sender, RoutedEventArgs e)
     {

@@ -24,6 +24,7 @@ using Filee.App.Services.Triggers;
 using Filee.App.ViewModels;
 using Filee.App.Views;
 using Filee.Core.Conversion;
+using Filee.Core.Localization;
 using Filee.Core.Platform;
 using Filee.Core.Presets;
 using Filee.Core.Profiles;
@@ -40,7 +41,8 @@ public sealed class RadialController(
     UserDataStore store,
     IPlatformServices platform,
     TriggerService triggers,
-    ILogger<RadialController> log)
+    ILogger<RadialController> log,
+    ILocalizer? loc = null)
 {
     /// <summary>
     /// How long the ring shows a running job before the toast window takes over. Long enough for a typical office
@@ -388,8 +390,8 @@ public sealed class RadialController(
             var answer = await windows.AskValueAsync(preset.Prompt, sources, near);
             if (answer is null)
                 return;
-            PromptApplier.Apply(preset, answer);
-            conversions.Start(sources, preset, web: web);
+            PromptApplier.Apply(preset, answer, loc);
+            conversions.Start(sources, preset, showInToast: true, web: web);
             web = null; // the conversion owns the browser drop now
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

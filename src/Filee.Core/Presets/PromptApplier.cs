@@ -1,6 +1,7 @@
 // Copyright (c) KnifeLemon. Licensed under the MIT License.
 
 using System;
+using Filee.Core.Localization;
 
 namespace Filee.Core.Presets;
 
@@ -22,13 +23,20 @@ public static class PromptApplier
 {
     /// <summary>
     /// Maps a <see cref="PromptAnswer"/> to options on a cloned <see cref="Preset"/>.
+    /// Resets <see cref="Preset.Kind"/> to <see cref="PresetKind.Convert"/> so conversion engines run it.
     /// </summary>
-    public static void Apply(Preset clone, PromptAnswer answer)
+    public static void Apply(Preset clone, PromptAnswer answer, ILocalizer? loc = null)
     {
+        clone.Kind = PresetKind.Convert;
         switch (answer.Kind)
         {
             case PromptKind.TargetSize:
                 clone.TargetSizeBytes = answer.TargetSizeBytes;
+                if (answer.TargetSizeBytes is { } bytes)
+                {
+                    clone.Name = loc?.Format("preset.reduce_to", SizeText.Format(bytes))
+                        ?? $"Reduce to {SizeText.Format(bytes)}";
+                }
                 break;
 
             case PromptKind.Pixels:
