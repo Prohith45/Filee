@@ -164,14 +164,27 @@ public sealed partial class ToolbarPageViewModel : ObservableObject, IDisposable
     /// <summary>Extension chips of a normal profile (null for a mixed one).</summary>
     [ObservableProperty] private ExtensionTagsViewModel? _extensionTags;
 
-    /// <summary>The donut shows and edits the back face of the profile (the Front / Back switch).</summary>
-    [ObservableProperty] private bool _editingBack;
+    [ObservableProperty] private DonutFace _editingFace = DonutFace.Front;
 
-    /// <summary>The front face is edited: the other half of the switch.</summary>
+    /// <summary>The donut shows and edits the back face of the profile.</summary>
+    public bool EditingBack
+    {
+        get => EditingFace == DonutFace.Back;
+        set { if (value) EditingFace = DonutFace.Back; else if (EditingFace == DonutFace.Back) EditingFace = DonutFace.Front; }
+    }
+
+    /// <summary>The front face is edited.</summary>
     public bool EditingFront
     {
-        get => !EditingBack;
-        set => EditingBack = !value;
+        get => EditingFace == DonutFace.Front;
+        set { if (value) EditingFace = DonutFace.Front; }
+    }
+
+    /// <summary>The tools face is edited.</summary>
+    public bool EditingTools
+    {
+        get => EditingFace == DonutFace.Tools;
+        set { if (value) EditingFace = DonutFace.Tools; }
     }
 
     /// <summary>Slices on the front face, for the switch.</summary>
@@ -179,6 +192,9 @@ public sealed partial class ToolbarPageViewModel : ObservableObject, IDisposable
 
     /// <summary>Slices on the back face, for the switch.</summary>
     public int BackCount => Profile?.BackPresetIds?.Count ?? 0;
+
+    /// <summary>Slices on the tools face, for the switch.</summary>
+    public int ToolsCount => Profile?.ToolPresetIds?.Count ?? 0;
 
     /// <summary>Check list of a mixed-selection profile (null for a normal one).</summary>
     [ObservableProperty] private MixedExtensionsViewModel? _mixedExtensions;
@@ -190,11 +206,18 @@ public sealed partial class ToolbarPageViewModel : ObservableObject, IDisposable
 
     /// <summary>The preset ids of the face being edited (null without a profile).</summary>
     private List<string>? Slices => Profile is not { } profile ? null
-        : EditingBack ? (profile.BackPresetIds ??= []) : profile.PresetIds;
+        : EditingFace switch
+        {
+            DonutFace.Back => (profile.BackPresetIds ??= []),
+            DonutFace.Tools => (profile.ToolPresetIds ??= []),
+            _ => profile.PresetIds,
+        };
 
-    partial void OnEditingBackChanged(bool value)
+    partial void OnEditingFaceChanged(DonutFace value)
     {
         OnPropertyChanged(nameof(EditingFront));
+        OnPropertyChanged(nameof(EditingBack));
+        OnPropertyChanged(nameof(EditingTools));
         Message = null;
         Rebuild();
     }
@@ -521,11 +544,15 @@ public sealed partial class ToolbarPageViewModel : ObservableObject, IDisposable
         }
 
         CenterTitle = profile is null ? "" : _loc.DisplayName(profile);
-        CenterSubtitle = EditingBack
-            ? $"{_loc["toolbar.face_back"]} · {used.Count} / {ToolbarProfile.MaxSlices}"
-            : $"{used.Count} / {ToolbarProfile.MaxSlices}";
+        CenterSubtitle = EditingFace switch
+        {
+            DonutFace.Back => $"{_loc["toolbar.face_back"]} · {used.Count} / {ToolbarProfile.MaxSlices}",
+            DonutFace.Tools => $"{_loc["toolbar.face_tools"]} · {used.Count} / {ToolbarProfile.MaxSlices}",
+            _ => $"{used.Count} / {ToolbarProfile.MaxSlices}",
+        };
         OnPropertyChanged(nameof(FrontCount));
         OnPropertyChanged(nameof(BackCount));
+        OnPropertyChanged(nameof(ToolsCount));
     }
 
     private void JudgeSome(object pass)

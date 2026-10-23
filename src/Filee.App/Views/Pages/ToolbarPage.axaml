@@ -189,6 +189,12 @@
                     <TextBlock Classes="count" Text="{Binding BackCount}" />
                   </StackPanel>
                 </RadioButton>
+                <RadioButton Classes="face" IsChecked="{Binding EditingTools}">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{DynamicResource toolbar.face_tools}" />
+                    <TextBlock Classes="count" Text="{Binding ToolsCount}" />
+                  </StackPanel>
+                </RadioButton>
               </StackPanel>
             </Border>
             <TextBlock Classes="caption" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"

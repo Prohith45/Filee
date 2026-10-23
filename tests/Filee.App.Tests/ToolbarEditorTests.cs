@@ -411,6 +411,26 @@ public class ToolbarPageTests
         Assert.True(vm.IsMixed);
         Assert.NotNull(vm.MixedExtensions);
     }
+
+    [AvaloniaFact]
+    public void Switching_editing_face_switches_between_front_back_and_tools()
+    {
+        TestServices.EnsureInitialized("en");
+        var store = AppHost.Get<UserDataStore>();
+        using var vm = new ToolbarPageViewModel(store, AppHost.Get<Filee.Core.Localization.ILocalizer>(), AppHost.Get<WindowService>(),
+            AppHost.Get<PresetAvailability>(), AppHost.Get<ConverterCatalog>(), NullLogger<ToolbarPageViewModel>.Instance);
+        var images = vm.Profiles.Single(p => p.Profile.Id == "images");
+        vm.SelectedProfile = images;
+
+        Assert.Equal(DonutFace.Front, vm.EditingFace);
+        Assert.Equal(images.Profile.PresetIds, vm.DonutItems.Select(d => d.Id));
+
+        vm.EditingFace = DonutFace.Back;
+        Assert.Equal(images.Profile.BackPresetIds ?? [], vm.DonutItems.Select(d => d.Id));
+
+        vm.EditingFace = DonutFace.Tools;
+        Assert.Equal(images.Profile.ToolPresetIds ?? [], vm.DonutItems.Select(d => d.Id));
+    }
 }
 
 public class PresetAvailabilityTests

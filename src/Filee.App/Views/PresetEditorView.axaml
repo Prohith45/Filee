@@ -21,7 +21,7 @@
         <TextBox Text="{Binding Name}" />
         <TextBlock Classes="caption danger" Text="{Binding NameError}" IsVisible="{Binding NameError, Converter={x:Static ObjectConverters.IsNotNull}}" Margin="2,4,0,0" />
       </StackPanel>
-      <StackPanel Grid.Column="2">
+      <StackPanel Grid.Column="2" IsVisible="{Binding !IsPrompt}">
         <TextBlock Classes="label" Text="{DynamicResource presets.target}" />
         <ComboBox x:Name="TargetBox" Classes="targets" ItemsSource="{Binding Targets}" SelectedItem="{Binding Target}"
                   IsEnabled="{Binding CanChangeTarget}"
@@ -35,6 +35,10 @@
             </DataTemplate>
           </ComboBox.ItemTemplate>
         </ComboBox>
+      </StackPanel>
+      <StackPanel Grid.Column="2" IsVisible="{Binding IsPrompt}">
+        <TextBlock Classes="label" Text="{DynamicResource presets.prompt_kind}" />
+        <TextBox Text="{Binding PromptKindName}" IsReadOnly="True" />
       </StackPanel>
     </Grid>
 
@@ -370,7 +374,7 @@
     </Border>
 
     <!-- Output -->
-    <Border Classes="card" Padding="14">
+    <Border Classes="card" Padding="14" IsVisible="{Binding ShowOutput}">
       <StackPanel Spacing="10">
         <TextBlock Classes="h2" Text="{DynamicResource presets.group.output}" />
         <Grid ColumnDefinitions="*,12,*">

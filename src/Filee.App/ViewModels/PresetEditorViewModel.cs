@@ -170,7 +170,11 @@ public sealed partial class PresetEditorViewModel : ObservableObject
 
     public string PresetId => _original.Id;
     public bool IsTool => _original.IsTool;
-    public bool CanChangeTarget => !IsTool;
+    public bool IsPrompt => _original.IsPrompt;
+    public bool CanChangeTarget => !IsTool && !IsPrompt;
+    public bool ShowOutput => !IsPrompt;
+    public bool ShowPromptKind => IsPrompt;
+    public string PromptKindName => _loc[$"prompt.kind_{_original.Prompt.ToString().ToLowerInvariant()}"];
 
     public IReadOnlyList<Choice<string>> Targets { get; }
     public IReadOnlyList<Choice<ResizeMode>> ResizeModes { get; }
@@ -470,9 +474,9 @@ public sealed partial class PresetEditorViewModel : ObservableObject
         || (TargetIsAudio && !LosslessAudioTargets.Contains(TargetId) && MediaCodecs.Effective(TargetId, _audioCodecValue) != AudioCodec.Alac);
 
     /// <summary>A tool (Crop) keeps the source as it is: none of the image options apply.</summary>
-    public bool ShowImage => !IsTool && TargetIsImage && !IsLivePhoto;
+    public bool ShowImage => !IsTool && !IsPrompt && TargetIsImage && !IsLivePhoto;
     /// <summary>JPG and HEIC: a video can become a Live / Motion Photo instead of one still frame.</summary>
-    public bool ShowLivePhotoChoice => !IsTool && LivePhotoKinds.Count > 1;
+    public bool ShowLivePhotoChoice => !IsTool && !IsPrompt && LivePhotoKinds.Count > 1;
     /// <summary>A Live / Motion Photo is chosen and the target can be written as it: its clip options are shown.</summary>
     public bool IsLivePhoto => ShowLivePhotoChoice && _livePhotoValue != LivePhotoKind.None
         && MediaOptions.LivePhotoTargets(_livePhotoValue).Contains(TargetId);
@@ -482,13 +486,13 @@ public sealed partial class PresetEditorViewModel : ObservableObject
     private bool CanTurn => TargetIsImage || TargetId == "pdf";
     /// <summary>Rotate and flip for a PDF target, which has no image card to show them in.</summary>
     public bool ShowTurnForPdf => TargetId == "pdf";
-    public bool ShowQuality => !IsTool && (TargetId == BuiltInData.SameAsSource || LossyTargets.Contains(TargetId));
+    public bool ShowQuality => !IsTool && !IsPrompt && (TargetId == BuiltInData.SameAsSource || LossyTargets.Contains(TargetId));
     public bool ShowTiff => TargetId is "tiff" or BuiltInData.SameAsSource;
     public bool ShowWebp => TargetId is "webp" or BuiltInData.SameAsSource;
     public bool ShowMultiPageTiff => TargetId is "tiff";
     public bool ShowIco => TargetId == "ico";
     /// <summary>PDF options (also used when a PDF source becomes images) mean nothing for media, archive, font, subtitle, data, e-mail, 3D and geospatial targets.</summary>
-    public bool ShowPdf => !IsTool && !IsLivePhoto && TargetCategory is not (FormatCategory.Video or FormatCategory.Audio or FormatCategory.Archive or FormatCategory.Font
+    public bool ShowPdf => !IsTool && !IsPrompt && !IsLivePhoto && TargetCategory is not (FormatCategory.Video or FormatCategory.Audio or FormatCategory.Archive or FormatCategory.Font
         or FormatCategory.Subtitle or FormatCategory.Data or FormatCategory.Model3D or FormatCategory.Geo) && TargetId != "eml";
     /// <summary>"Save as ZIP" is offered for geospatial targets, whose results are several files (a Shapefile) or travel zipped.</summary>
     public bool ShowZipResult => TargetCategory == FormatCategory.Geo;
@@ -505,7 +509,7 @@ public sealed partial class PresetEditorViewModel : ObservableObject
     public bool ShowDocument => TargetId == "pdf";
     /// <summary>Markdown can't hold pictures: they go into a folder next to it, or are left out.</summary>
     public bool ShowLeaveOutPictures => TargetId == "md";
-    public bool ShowMedia => ShowMediaQuality || ShowMaxHeight || ShowRemoveAudio || ShowAudioChannels || ShowVideoCodec || ShowAudioCodec;
+    public bool ShowMedia => !IsPrompt && (ShowMediaQuality || ShowMaxHeight || ShowRemoveAudio || ShowAudioChannels || ShowVideoCodec || ShowAudioCodec);
     /// <summary>Mono / stereo for every audio target but AMR, which is mono by definition.</summary>
     public bool ShowAudioChannels => TargetIsAudio && TargetId != "amr";
     /// <summary>Sample rate and sample format: the PCM of WAV and W64 takes any.</summary>
@@ -520,25 +524,26 @@ public sealed partial class PresetEditorViewModel : ObservableObject
     public bool ShowMaxHeight => TargetIsVideo;
     public bool ShowAudioBitrate => TargetIsLossyMedia;
     public bool ShowRemoveAudio => TargetIsVideo;
-    public bool ShowArchive => TargetCategory == FormatCategory.Archive;
+    public bool ShowArchive => !IsPrompt && TargetCategory == FormatCategory.Archive;
     public bool ShowArchiveOptions => ShowArchive && TargetId != FormatRegistry.Folder;
     /// <summary>"Extract" has nothing to set; a line says what it does instead.</summary>
     public bool ShowExtractNote => TargetId == FormatRegistry.Folder;
     /// <summary>"Save every frame" of a video: PNG and JPG (format ids, <see cref="MediaOptions.FrameTargets"/>).</summary>
-    public bool ShowSaveEveryFrame => !IsTool && !IsLivePhoto && MediaOptions.FrameTargets.Contains(TargetId);
+    public bool ShowSaveEveryFrame => !IsTool && !IsPrompt && !IsLivePhoto && MediaOptions.FrameTargets.Contains(TargetId);
     /// <summary>The slideshow options, for a preset that makes a video of pictures (MP4).</summary>
     public bool ShowSlideshow => _isSlideshow && MediaOptions.JoinTargets.Contains(TargetId) && TargetIsVideo;
     /// <summary>The video of a Live / Motion Photo: MP4 and MOV (<see cref="MediaOptions.MotionPhotoTargets"/>).</summary>
-    public bool ShowExtractMotionPhoto => !IsTool && MediaOptions.MotionPhotoTargets.Contains(TargetId);
+    public bool ShowExtractMotionPhoto => !IsTool && !IsPrompt && MediaOptions.MotionPhotoTargets.Contains(TargetId);
     /// <summary>
     /// Playback speed: for the formats an animation stays animated in (an animated GIF, WebP, APNG or MNG, or a video
     /// made into a GIF or APNG). Other targets get one frame.
     /// </summary>
-    public bool ShowAnimationSpeed => TargetId is "gif" or "webp" or "apng" or "mng" or BuiltInData.SameAsSource;
+    public bool ShowAnimationSpeed => !IsPrompt && (TargetId is "gif" or "webp" or "apng" or "mng" or BuiltInData.SameAsSource);
     /// <summary>
     /// Tracing options: raster images reach SVG (and DXF / DWG through it) only by tracing. For other sources (a
     /// drawing, a CAD file) the options are ignored.
     /// </summary>
+    public bool ShowTracing => !IsPrompt && (TargetId is "svg" or "dxf" or "dwg");
     public bool ShowTrace => TargetId is "svg" or "svgz" or "dxf" or "dwg";
     public bool ShowTraceColors => TraceMode.Value == TracingMode.Color;
     public bool ShowPercent => Resize.Value == ResizeMode.Percent;
