@@ -31,8 +31,31 @@ public sealed class WindowService(ILocalizer loc, IServiceProvider services, Mem
 
     private CropOverlayWindow? _cropOverlay;
     private MergeOrderWindow? _mergeOrder;
+    private ValuePromptWindow? _valuePrompt;
 
     internal MergeOrderWindow? MergeOrder => _mergeOrder;
+    internal ValuePromptWindow? ValuePrompt => _valuePrompt;
+
+    /// <summary>Prompts for a value (target size, pixels, percent, quality, DPI) before conversion.</summary>
+    public async Task<PromptAnswer?> AskValueAsync(PromptKind kind, IReadOnlyList<string> sources, PixelPoint? near = null)
+    {
+        _valuePrompt?.Close();
+        var store = services.GetRequiredService<UserDataStore>();
+        var vm = new ValuePromptViewModel(kind, sources, loc, store);
+        var dialog = new ValuePromptWindow { DataContext = vm };
+        dialog.PositionOnScreen(near);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        dialog.Closed += (_, _) =>
+        {
+            if (_valuePrompt == dialog) _valuePrompt = null;
+            closed.TrySetResult();
+        };
+        _valuePrompt = dialog;
+        dialog.Show();
+        dialog.Activate();
+        await closed.Task;
+        return dialog.Result;
+    }
 
     /// <summary>Reviews the order of a PDF merge. Closing or cancelling starts no conversion.</summary>
     public async Task<IReadOnlyList<string>?> ChooseMergeOrderAsync(IReadOnlyList<string> files)

@@ -226,6 +226,12 @@ public sealed class AppSettings
     /// <summary>Where presets set to "Default" save (Settings → General).</summary>
     public DefaultOutputSettings DefaultOutput { get; set; } = new();
 
+    /// <summary>Last entered target size text in the value prompt window.</summary>
+    public string? LastTargetSizeText { get; set; }
+
+    /// <summary>Last selected size unit in the value prompt window (KB or MB).</summary>
+    public string? LastTargetSizeUnit { get; set; }
+
     /// <summary>Where files dragged from a web browser are saved (Settings → General).</summary>
     public BrowserDropSettings BrowserDrops { get; set; } = new();
 

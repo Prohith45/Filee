@@ -332,6 +332,14 @@ public sealed class RadialController(
             return;
         }
 
+        if (preset.IsPrompt)
+        {
+            var near = _window?.Position;
+            Close(animate: false);
+            _ = AskThenConvertAsync(sources, preset.Clone(), web, near);
+            return;
+        }
+
         // Merged PDFs, joined clips and slideshows follow the order the user picks.
         if ((preset.TargetFormat == "pdf" && preset.Pdf.MergeIntoSingle || preset.JoinsIntoOneMedia) && sources.Count > 1)
         {
@@ -366,6 +374,27 @@ public sealed class RadialController(
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             log.LogError(ex, "Could not start the ordered PDF merge");
+        }
+        finally
+        {
+            web?.Dispose();
+        }
+    }
+
+    private async Task AskThenConvertAsync(IReadOnlyList<string> sources, Preset preset, WebDrop? web, PixelPoint? near)
+    {
+        try
+        {
+            var answer = await windows.AskValueAsync(preset.Prompt, sources, near);
+            if (answer is null)
+                return;
+            PromptApplier.Apply(preset, answer);
+            conversions.Start(sources, preset, web: web);
+            web = null; // the conversion owns the browser drop now
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log.LogError(ex, "Could not start conversion from prompt preset {Preset}", preset.Id);
         }
         finally
         {

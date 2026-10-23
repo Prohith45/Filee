@@ -556,7 +556,7 @@ public sealed partial class DonutMenu : Control
         e.Handled = true;
     }
 
-    private void SetHover(int index)
+    internal void SetHover(int index)
     {
         if (_hoverIndex == index)
             return;
