@@ -1,7 +1,6 @@
 {
   "app.name": "Filee",
   "app.tagline": "拖一拖，放一放，轉換完成。",
-
   "nav.home": "首頁",
   "nav.general": "一般",
   "nav.triggers": "觸發方式",
@@ -11,7 +10,6 @@
   "nav.theme": "主題",
   "nav.engines": "轉換引擎",
   "nav.about": "關於",
-
   "tray.open": "開啟 Filee",
   "tray.pause": "暫停快捷操作",
   "tray.resume": "恢復快捷操作",
@@ -23,7 +21,6 @@
   "close.tray": "保留在系統匣",
   "close.quit": "結束",
   "close.dont_ask": "不再詢問",
-
   "home.title": "首頁",
   "home.drop_title": "將檔案拖放到這裡",
   "home.drop_select": "按兩下選取檔案",
@@ -47,7 +44,6 @@
   "home.clear_history": "清除",
   "home.files": "{0} 個檔案",
   "home.failed_files": "{0} 個失敗",
-
   "donut.center_drag": "把檔案拖到這裡",
   "donut.files_same": "{0} 個 {1}",
   "donut.files_mixed": "{0} 個檔案",
@@ -63,7 +59,6 @@
   "donut.group_caption": "群組 · {0} 個項目",
   "donut.flip_to_back": "{0} ↻ 背面",
   "donut.flip_to_front": "{0} ↻ 正面",
-
   "toast.converting": "{0} → {1}",
   "toast.done": "完成",
   "toast.done_errors": "{1} 個中有 {0} 個失敗",
@@ -76,7 +71,6 @@
   "toast.get_fonts": "取得字型",
   "download.badge": "{0}/s · {1}",
   "download.badge_files": "{0} · 第 {1}/{2} 個檔案",
-
   "error.unsupported_source": "不支援此檔案類型",
   "error.empty_file": "檔案是空的（0 位元組）。用右鍵選單「新增」建立的檔案，要在對應的應用程式中開啟並儲存後才有內容",
   "format_request.request": "請求支援此格式",
@@ -119,7 +113,6 @@
   "notice.geo_rows_without_location": "部分列無法讀出位置，已不帶形狀儲存",
   "notice.geo_field_names": "Shapefile 欄位名最多 10 個字元，部分名稱已縮短",
   "notice.geo_shapefile_split": "Shapefile 只能儲存一種形狀，因此點、線、面被分別存成了多個檔案",
-
   "engine.reason.not_installed": "未安裝",
   "engine.reason.error": "檢查時出錯",
   "engine.reason.unsupported_platform": "此平台不可用",
@@ -153,7 +146,6 @@
   "engine.ghostscript.description": "EPS、PostScript 和舊版 Illustrator 檔案轉為 PDF 和圖片；PDF 轉為 EPS 和 PS。",
   "engine.calibre.description": "少見的電子書格式（LIT、LRF、CHM、PDB、RB…）以及 Kindle 輸出（MOBI、AZW3）。\n排在 HWPX writer 之上時，也由它把電子書轉為 PDF（長書快得多）。",
   "engine.libreoffice.description": "讀取較舊或少見的格式，如 DOC、PPT、Pages、Keynote、Numbers、WordPerfect、ClarisWorks、Publisher、Visio。\n也能儲存為 DOC、XLS、PPT、ODT、ODP、OpenDocument 範本或 EMF。",
-
   "profile.images": "圖片",
   "profile.pdf": "PDF",
   "profile.office": "文件",
@@ -173,7 +165,6 @@
   "profile.models": "3D 模型",
   "profile.geo": "地理資訊 (GIS)",
   "profile.mixed": "混合檔案",
-
   "preset.crop": "裁剪",
   "crop.save": "裁剪並儲存",
   "crop.reset": "重設",
@@ -195,7 +186,6 @@
   "crop.state_done": "已裁剪",
   "crop.state_skipped": "已跳過",
   "crop.state_failed": "失敗",
-
   "preset.half_size": "縮小 50%",
   "preset.grayscale": "灰階",
   "preset.remove_background": "去除背景",
@@ -237,7 +227,6 @@
   "preset.compress_audio": "壓縮音訊",
   "preset.merge_audio": "合併音訊",
   "preset.remove_metadata": "移除中繼資料",
-
   "format.folder": "資料夾",
   "format.category.Image": "圖片",
   "format.category.Pdf": "PDF",
@@ -257,7 +246,6 @@
   "format.category.Data": "資料",
   "format.category.Model3D": "3D 模型",
   "format.category.Geo": "地理資訊",
-
   "general.title": "一般",
   "general.language": "語言",
   "general.language_auto": "跟隨系統",
@@ -336,7 +324,6 @@
   "general.reset_library": "還原為初始設定",
   "general.reset_confirm": "要將所有預設和工具列設定檔還原為初始設定嗎？",
   "general.imported": "已匯入 {0} 項",
-
   "triggers.title": "觸發方式",
   "triggers.description": "選擇開啟環形工具列的方式。可以新增任意多個手勢。",
   "triggers.macos_permissions": "請在「系統設定 > 隱私權與安全性 > 輔助使用」中允許 Filee。\n首次使用「選取檔案」的快速鍵時，Finder 還會要求自動化權限。",
@@ -389,7 +376,6 @@
   "triggers.excluded_none_running": "沒有其他開啟視窗的應用程式。",
   "triggers.excluded_note": "指標位於這些應用程式上時，手勢和快速鍵不起作用。",
   "triggers.paused": "快捷操作已暫停",
-
   "toolbar.title": "環形工具列",
   "toolbar.step_profile": "1. 選擇設定檔",
   "toolbar.step_arrange": "2. 排列預設",
@@ -451,7 +437,6 @@
   "toolbar.mixed_others": "其他混合選取會開啟「{0}」。",
   "toolbar.mixed_others_self": "沒有未勾選任何項目的混合設定檔，因此其他混合選取也會使用此設定檔。",
   "tags.remove": "移除",
-
   "presets.title": "預設",
   "presets.add": "新增",
   "presets.duplicate": "複製",
@@ -627,7 +612,6 @@
   "presets.delete_confirm": "刪除「{0}」？它也會從所有工具列和群組中移除。",
   "presets.name_required": "請輸入名稱",
   "presets.select": "選擇要編輯的預設",
-
   "theme.title": "主題",
   "theme.mode": "外觀",
   "theme.mode.System": "跟隨系統",
@@ -640,7 +624,6 @@
   "theme.reduce_motion": "減少動畫",
   "theme.reduce_motion_hint": "適合效能較低的電腦。關閉轉場效果和圓環的彈跳效果。",
   "theme.preview": "預覽",
-
   "engines.title": "轉換引擎",
   "engines.description": "Filee 會為每次轉換選擇最合適的可用引擎。\n多個引擎能完成同一轉換時，清單中排在前面的優先。",
   "engines.available": "可用",
@@ -711,7 +694,6 @@
   "engines.state.unpacking": "安裝中…",
   "engines.state.installed": "已安裝",
   "engines.state.failed": "失敗：{0}",
-
   "about.title": "關於",
   "about.updates": "更新",
   "common.search": "搜尋",
@@ -736,7 +718,6 @@
   "feedback.notice_text": "在 GitHub 上加個星號（⭐）能幫助更多人發現 Filee。\n也歡迎回報問題或提出想法。",
   "feedback.star": "在 GitHub 上加星號",
   "feedback.issue": "回報問題 · 提出建議",
-
   "common.ok": "確定",
   "common.cancel": "取消",
   "common.save": "儲存",
@@ -746,7 +727,6 @@
   "common.no": "否",
   "common.on": "開",
   "common.off": "關",
-
   "setup.title": "選擇轉換引擎",
   "setup.description": "圖片、PDF、Office 文件、HWP、電子書、壓縮檔、字型、CAD 和 3D 模型現在就能轉換。\n只有影片、音訊或少見格式才需要下載引擎。",
   "setup.note": "可隨時在「設定 → 轉換引擎」中安裝或刪除引擎。",
@@ -907,7 +887,6 @@
   "watch.status_starting": "正在啟動…",
   "watch.status_error": "無法監視此資料夾：{0}",
   "watch.cli_hint": "也可以在命令列中使用：filee watch <資料夾> --to <格式>",
-
   "whats_new.title": "Filee {0} 新功能",
   "whats_new.previous": "上一頁",
   "whats_new.next": "下一頁",
@@ -926,5 +905,41 @@
   "whats_new.2_0_0.languages.title": "支援更多語言",
   "whats_new.2_0_0.languages.text": "在英語、韓語、中文和波蘭語之外，新增西班牙語、印地語、日語、俄語、阿拉伯語和巴西葡萄牙語。",
   "whats_new.2_0_0.more.title": "還有更多",
-  "whats_new.2_0_0.more.text": "可以只把一個環形工具列還原為初始設定、搜尋全部歷史記錄，並透過 LibreOffice 轉換古吉拉特語、印地語或阿拉伯語文件。"
+  "whats_new.2_0_0.more.text": "可以只把一個環形工具列還原為初始設定、搜尋全部歷史記錄，並透過 LibreOffice 轉換古吉拉特語、印地語或阿拉伯語文件。",
+  "preset.reduce_size": "縮小檔案",
+  "preset.resize_pixels": "調整尺寸 (像素)",
+  "preset.resize_percent": "調整比例 (百分比)",
+  "preset.set_quality": "變更品質",
+  "preset.set_dpi": "變更 DPI",
+  "preset.reduce_to": "縮小至 {0}",
+  "donut.tools_hint": "{0} ↻ 工具",
+  "donut.tools_back": "工具",
+  "toolbar.face_tools": "工具",
+  "triggers.tools_title": "工具面快捷鍵",
+  "triggers.tools_description": "切換圓環至工具面的按鍵 (預設: R)。",
+  "triggers.tools_reset": "重設為 R",
+  "presets.prompt_kind": "輸入類型",
+  "prompt.title_size": "縮小檔案大小",
+  "prompt.title_pixels": "調整解析度",
+  "prompt.title_percent": "依百分比縮放",
+  "prompt.title_quality": "設定影像品質",
+  "prompt.title_dpi": "設定列印解析度 (DPI)",
+  "prompt.kind_targetsize": "目標檔案大小",
+  "prompt.kind_pixels": "像素尺寸",
+  "prompt.kind_percent": "百分比縮放",
+  "prompt.kind_quality": "影像品質",
+  "prompt.kind_dpi": "列印解析度 (DPI)",
+  "prompt.current_size": "目前大小: {0}",
+  "prompt.unit_kb": "KB",
+  "prompt.unit_mb": "MB",
+  "prompt.error_invalid": "請輸入有效的正數。",
+  "prompt.error_not_smaller": "目標大小必須小於 {0}。",
+  "prompt.multi_notice": "每個檔案將縮小至不超過此大小。",
+  "notice.size_already_small": "檔案已小於目標大小",
+  "notice.size_quantized": "已量化為 256 色以達到目標大小",
+  "notice.size_target_not_reached": "無法達到目標大小",
+  "error.size_target_unsupported": "此檔案類型不支援指定目標大小",
+  "error.size_target_animation": "動態影像與多幀檔案無法縮小至指定大小",
+  "error.size_target_too_small": "目標大小 {0} 太小，無法達到",
+  "cli.error.preset_is_prompt": "預設在轉換前需要輸入數值"
 }

@@ -59,6 +59,19 @@
    families to `FileResult.MissingFonts`; the toast card can offer one trusted source, while the CLI and watch jobs
    report the names without pausing conversion or installing anything.
 
+## Tools face and value prompts
+
+Pressing **R** while the donut is open flips it over to its **Tools face** (`DonutFace.Tools`).
+`RadialViewModel` manages active faces across `Front`, `Back`, and `Tools`. Flipping uses the 200 ms 3D coin-flip animation (`DonutMenu.Flip.cs`), and flipping back from Tools returns to whichever face opened it (Front or Back).
+
+The Tools face hosts utility presets (`PresetKind.Prompt`):
+- **Reduce size**: prompts for a target file size (e.g. `500 KB`, `1.5 MB`). On OK, bisects compression settings down to at most the target size without overwriting originals (`{name}_reduced.ext`).
+  - **Images** (`MagickImageConverter`): lossy quality bisection (Phase A) and scaling bisection (Phase B); PNG 256-color palette quantization when needed.
+  - **PDF** (`PdfSharpConverter` & `PdfCompressor`): bisection over a monotonic quality and resolution ladder, with Ghostscript fallback.
+  - **Video / Audio** (`FfmpegConverter` & `MediaEncoding`): target bitrate calculation, two-pass x264 encoding with passlog.
+- **Resize (pixels)**, **Resize (percent)**, **Change quality**, and **Change DPI**: interactively configure resize dimensions, quality slider, or print DPI via `ValuePromptWindow`.
+- Value prompts use `ValuePromptWindow` and `ValuePromptViewModel` (number box, KB/MB units, inline validation, and multi-file handling). The CLI also supports `--target-size <size>` for headless conversions.
+
 ## Files dragged from a web browser
 
 A picture, a link to a file or a download dragged out of a browser opens the donut like a file from the file manager.

@@ -14,6 +14,21 @@ change, a language may repeat; a language without lines shows the English ones):
 - `recommended`: bug fixes. The card shows once per version.
 - `optional`: new features only. No card, the sidebar button only.
 
+## 2.1.0
+
+<!-- update
+level: optional
+en: Flip the donut to a Tools face with R for target-size reduction, pixel resize, quality and DPI
+ko: R 키를 눌러 도구 면으로 뒤집고 목표 파일 크기 축소, 픽셀 조절, 화질, DPI 도구를 사용할 수 있어요
+-->
+
+### Tools face and value prompts
+
+- Press **R** while the donut is open to flip to the new **Tools face**.
+- Includes **Reduce size** to compress images, PDFs, videos, and audio to a target file size (e.g. 500 KB or 2 MB).
+- Additional tool presets: **Resize (pixels)**, **Resize (percent)**, **Change quality**, and **Change DPI**.
+- Added `--target-size <size>` support to the `filee` CLI.
+
 ## 2.0.0
 
 <!-- update

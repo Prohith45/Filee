@@ -72,6 +72,7 @@ slides show what's new.
 - **One toolbar per file type**, arranged by drag and drop, with presets for quality, size, DPI, PDF pages and compression,
   video and audio, output folder and file names.
 - **Two sides to every donut**: press <kbd>Tab</kbd> or turn the mouse wheel while it is open to flip it over to less common formats and tools.
+- **Tools face & target-size reduction**: press <kbd>R</kbd> while the donut is open to flip to the Tools face with utilities like target size reduction (e.g. 500 KB or 2 MB), pixel resizing, quality and DPI adjustments.
 - **Crop before converting**: the Crop slice opens pictures one by one. Drag the frame, pick a ratio, and only that part is saved.
 - **Many files at once**, in parallel. Routes with several steps (HWP → HWPX → DOCX) are found automatically.
 - **Watch folders** convert every file that lands in them.
