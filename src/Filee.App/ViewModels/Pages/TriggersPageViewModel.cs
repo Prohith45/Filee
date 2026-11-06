@@ -22,10 +22,12 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
     private readonly Action _save;
     private bool _loading = true;
 
-    public TriggerGestureViewModel(TriggerGesture gesture, ILocalizer loc, Action save)
+    /// <param name="clipboardAvailable">The platform can read the clipboard (<see cref="IPlatformServices.SupportsClipboard"/>).</param>
+    public TriggerGestureViewModel(TriggerGesture gesture, ILocalizer loc, Action save, bool clipboardAvailable = false)
     {
         _gesture = gesture;
         _save = save;
+        ClipboardAvailable = clipboardAvailable;
         Kinds = Enum.GetValues<TriggerKind>().Select(k => new Choice<TriggerKind>(k, loc[$"triggers.kind.{k}"])).ToList();
         Buttons = Enum.GetValues<TriggerMouseButton>().Where(b => b != TriggerMouseButton.None)
             .Select(b => new Choice<TriggerMouseButton>(b, loc[$"triggers.button.{b}"])).ToList();
@@ -49,6 +51,7 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
         DragThreshold = gesture.DragThreshold;
         HoldMilliseconds = gesture.HoldMilliseconds;
         Scope = Scopes.First(s => s.Value == gesture.Scope);
+        Clipboard = gesture.Clipboard;
         _loading = false;
     }
 
@@ -60,10 +63,11 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
     public string RecordingLabel { get; }
     public string SystemLabel { get; }
     public string MetaLabel => OperatingSystem.IsMacOS() ? "⌘ Cmd" : "Win";
+    public bool ClipboardAvailable { get; }
 
     [ObservableProperty] private bool _enabled;
 
-    [ObservableProperty, NotifyPropertyChangedFor(nameof(UsesMouse), nameof(UsesKey), nameof(UsesThreshold), nameof(UsesHold))]
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(UsesMouse), nameof(UsesKey), nameof(UsesThreshold), nameof(UsesHold), nameof(UsesClipboard))]
     private Choice<TriggerKind> _kind = null!;
 
     [ObservableProperty] private bool _ctrl;
@@ -75,12 +79,15 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
     [ObservableProperty, NotifyPropertyChangedFor(nameof(ThresholdText))] private int _dragThreshold;
     [ObservableProperty] private int _holdMilliseconds;
     [ObservableProperty] private Choice<TriggerScope> _scope = null!;
+    [ObservableProperty] private bool _clipboard;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(KeyText))] private bool _isRecording;
 
     public bool UsesMouse => Kind.Value != TriggerKind.KeyChord;
     public bool UsesKey => Kind.Value == TriggerKind.KeyChord;
     public bool UsesThreshold => Kind.Value == TriggerKind.Drag;
     public bool UsesHold => Kind.Value == TriggerKind.Hold;
+    /// <summary>A keyboard shortcut where the clipboard can be read: it may convert what is on the clipboard.</summary>
+    public bool UsesClipboard => UsesKey && ClipboardAvailable;
     public string KeyText => IsRecording ? RecordingLabel : string.IsNullOrEmpty(Key) ? "—" : Key;
     public string ThresholdText => DragThreshold == 0 ? SystemLabel : $"{DragThreshold}px";
     public string Summary => GestureText.Describe(_gesture);
@@ -94,7 +101,7 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
     {
         base.OnPropertyChanged(e);
         if (_loading || e.PropertyName is nameof(IsRecording) or nameof(KeyText) or nameof(ThresholdText) or nameof(Summary)
-            or nameof(UsesMouse) or nameof(UsesKey) or nameof(UsesThreshold) or nameof(UsesHold))
+            or nameof(UsesMouse) or nameof(UsesKey) or nameof(UsesThreshold) or nameof(UsesHold) or nameof(UsesClipboard))
             return;
 
         _gesture.Enabled = Enabled;
@@ -106,6 +113,7 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
         _gesture.DragThreshold = Math.Clamp(DragThreshold, 0, 200);
         _gesture.HoldMilliseconds = Math.Clamp(HoldMilliseconds, 150, 3000);
         _gesture.Scope = Scope.Value;
+        _gesture.Clipboard = Clipboard;
         OnPropertyChanged(nameof(Summary));
         _save();
     }
@@ -306,7 +314,7 @@ public sealed partial class TriggersPageViewModel : ObservableObject, IDisposabl
         if (triggers is not null)
             triggers.StatusChanged += OnTriggerStatusChanged;
         foreach (var gesture in store.Settings.Triggers)
-            Gestures.Add(new TriggerGestureViewModel(gesture, loc, Save));
+            Gestures.Add(new TriggerGestureViewModel(gesture, loc, Save, platform?.SupportsClipboard == true));
         ExcludedApps = new ExcludedAppsViewModel(store.Settings.ExcludedProcesses, platform, Save);
         Flip = new FlipOptionsViewModel(store, loc, Save);
     }
@@ -322,13 +330,24 @@ public sealed partial class TriggersPageViewModel : ObservableObject, IDisposabl
     public string? PlatformNotice => _platform switch
     {
         MacOSPlatformServices => _loc["triggers.macos_permissions"],
+        // FILEE_WAYLAND_GESTURES=0 turns the GNOME bridge off; the plain Wayland notice applies then.
+        LinuxPlatformServices when OperatingSystem.IsLinux() && LinuxPlatformServices.UsesGnomePointerBridge =>
+            _loc["triggers.linux_gnome_wayland"],
         LinuxPlatformServices linux when OperatingSystem.IsLinux() && LinuxPlatformServices.IsWaylandSession =>
             _loc[linux.SupportsGlobalPointerGestures ? "triggers.linux_wayland_experimental" : "triggers.linux_wayland"],
         LinuxPlatformServices => _loc["triggers.linux_x11"],
         _ => null,
     };
     public string? HookStatus => _triggers?.Error is { } error ? HookFailure(_loc, error, _triggers.LinuxBackendMissing)
+        : _triggers?.GnomeExtensionStatus is { } gnome ? _loc[GnomeStatusKey(gnome)]
         : _triggers is null ? null : _loc[_triggers.IsRunning ? "triggers.hook_running" : "triggers.hook_stopped"];
+
+    internal static string GnomeStatusKey(GnomeBridgeStatus status) => status switch
+    {
+        GnomeBridgeStatus.Connected => "triggers.hook_running",
+        GnomeBridgeStatus.VersionMismatch => "triggers.gnome_version_mismatch",
+        _ => "triggers.gnome_waiting",
+    };
 
     /// <summary>
     /// A Linux back end that doesn't load is explained (X11 session, X libraries) instead of showing libuiohook's
@@ -379,7 +398,7 @@ public sealed partial class TriggersPageViewModel : ObservableObject, IDisposabl
     {
         var gesture = new TriggerGesture { Modifiers = ModifierKeys.Alt, Button = TriggerMouseButton.Left };
         _store.Settings.Triggers.Add(gesture);
-        Gestures.Add(new TriggerGestureViewModel(gesture, _loc, Save));
+        Gestures.Add(new TriggerGestureViewModel(gesture, _loc, Save, _platform?.SupportsClipboard == true));
         Save();
     }
 

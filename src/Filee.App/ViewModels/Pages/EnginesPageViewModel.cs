@@ -19,7 +19,16 @@ public sealed partial class EngineItemViewModel(IConverter converter, EngineStat
     [ObservableProperty] private bool _isDragging;
 
     public IConverter Converter { get; } = converter;
-    public string Name => Converter.DisplayName;
+    public bool IsTranslator => Converter.Id == "translator";
+    /// <summary>Localized descriptive name, retaining the engine's technical name for unregistered engines.</summary>
+    public string Name
+    {
+        get
+        {
+            var key = $"engine.{Converter.Id}.name";
+            return loc[key] is var text && text != key ? text : Converter.DisplayName;
+        }
+    }
     public bool IsAvailable { get; } = status.IsAvailable;
     public string StatusText { get; } = status.IsAvailable ? loc["engines.available"] : loc[status.ReasonKey ?? "engines.unavailable"];
 
@@ -104,14 +113,16 @@ public sealed partial class EnginesPageViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<EngineItemViewModel> Engines { get; } = [];
 
-    [RelayCommand]
+    // Any number of rows can be clicked; the service queues them and installs one at a time (#819).
+    [RelayCommand(AllowConcurrentExecutions = true)]
     private Task Install(EnginePackageState package) => _downloads.InstallAsync(package);
 
     [RelayCommand]
     private void Cancel(EnginePackageState package) => _downloads.Cancel(package);
 
     /// <summary>Removes a package (after the view asked for confirmation). False when its files are in use.</summary>
-    public bool Remove(EnginePackageState package) => _downloads.Uninstall(package);
+    /// <summary>Removes a package: null when it's gone, else the key of the reason (see <see cref="EngineDownloadService.Uninstall"/>).</summary>
+    public string? Remove(EnginePackageState package) => _downloads.Uninstall(package);
 
     /// <summary>
     /// Uses the user's own copy of a package from <paramref name="path"/> (a program they picked). Returns false when
@@ -151,12 +162,20 @@ public sealed partial class EnginesPageViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void MoveDown(EngineItemViewModel item) => Move(item, +1);
 
+    /// <summary>The check can be over in a blink; the arrow on "Check again" keeps turning for at least this long so it reads as checking.</summary>
+    private static readonly TimeSpan MinimumRecheckTime = TimeSpan.FromMilliseconds(900);
+
     [RelayCommand]
-    private void Recheck()
+    private async Task Recheck()
     {
+        // With "Reduce animations" on there is no arrow turning, so there is nothing to hold the result back for.
+        var minimumSpin = Task.Delay(Motion.Enabled ? MinimumRecheckTime : TimeSpan.Zero);
         EngineEnvironment.ForgetSystemCopies(); // a tool installed meanwhile is found
         _downloads.RefreshStatus();
+        _ = Task.Run(Filee.Engines.Translation.TranslatorConverter.PerformCheck);
         _catalog.Refresh();
+        _ = _catalog.CheckInBackgroundAsync();
+        await minimumSpin;
     }
 
     private void Move(EngineItemViewModel item, int delta)

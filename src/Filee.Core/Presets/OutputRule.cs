@@ -32,7 +32,23 @@ public enum ConflictPolicy
 /// <summary>Output placement and naming rules.</summary>
 public sealed class OutputRule
 {
+    /// <summary>A name this version doesn't know (from a newer Filee) reads as <see cref="OutputLocation.Default"/>.</summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(LenientEnumJsonConverter<OutputLocation>))]
     public OutputLocation Location { get; set; } = OutputLocation.Default;
+
+    /// <summary>
+    /// "Ask every time" (#521): the donut asks where to save first, once per batch, in the source's folder
+    /// (<see cref="AskedLocation"/>). Where nothing can ask (the command line, files from a browser, other tools),
+    /// <see cref="Location"/> applies. A bool of its own, so a Filee from before it keeps the preset and uses Location.
+    /// </summary>
+    public bool AskEveryTime { get; set; }
+
+    /// <summary>
+    /// The one path the user picked and confirmed in the save dialog: it may replace a file there whatever
+    /// <see cref="Conflict"/> says. Set per job, never saved with a preset.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ConfirmedPath { get; set; }
 
     public string SubfolderName { get; set; } = "converted";
 
@@ -90,6 +106,21 @@ public sealed class OutputRule
     /// instead, with a notice. A result in another format is always kept.
     /// </summary>
     public bool OnlyIfSmaller { get; set; }
+
+    /// <summary>
+    /// The result takes the original's place and the original goes to the Recycle Bin / Trash (#332): only when the
+    /// result has the source's format, only after it is complete, never for watch folders or files from a browser.
+    /// When the original can't be moved there (a network drive, a file still open elsewhere, no Trash), it stays and
+    /// the result is saved as usual, with a note saying why.
+    /// </summary>
+    public bool ReplaceOriginal { get; set; }
+
+    /// <summary>
+    /// Copy to folder only (#856): the files are moved into <see cref="CustomFolder"/> instead of copied, so they are
+    /// gone from where they were. Off by default. An original is removed only once its copy is complete; files from a
+    /// browser have no original and are saved as when copying. A Filee from before it ignores it and copies.
+    /// </summary>
+    public bool MoveInsteadOfCopy { get; set; }
 
     public OutputRule Clone()
     {

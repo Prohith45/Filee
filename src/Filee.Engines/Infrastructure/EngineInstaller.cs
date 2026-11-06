@@ -7,12 +7,14 @@
 //    entries, no admin rights. Parts headless LibreOffice never uses (help, gallery, most dictionaries) are removed.
 //  * conda-forge packages (Ghostscript, the Microsoft C++ runtime) are zip files holding zstd-compressed tarballs;
 //    only their Windows binaries (Library/bin) are unpacked, with a managed decompressor (no 7-Zip, no installer).
+//  * NSIS installers (Tesseract) are unpacked with Filee's own 7-Zip, never run: files only, no registry entries.
 //  * A marker file with the component's hash records what is installed, so an engines.json update is detected.
 
 using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using Filee.Core.Conversion;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SharpCompress.Compressors.Xz;
@@ -30,6 +32,29 @@ public enum EngineInstallStage
 /// <param name="BytesDone">Bytes of the package downloaded so far (all components).</param>
 /// <param name="BytesTotal">Download size of the components being installed.</param>
 public readonly record struct EngineInstallProgress(EngineInstallStage Stage, string ComponentId, double Fraction, long BytesDone = 0, long BytesTotal = 0);
+
+/// <summary>Which copy of a package the engines use, see <see cref="EngineInstaller.StatusOf"/>.</summary>
+public enum EngineCopyStatus
+{
+    NotInstalled,
+    /// <summary>Filee's download.</summary>
+    Installed,
+    /// <summary>The user's own copy (Settings → Engines) or one found on the PC; nothing of Filee's is used.</summary>
+    OwnCopy,
+}
+
+/// <summary>The copy of a package the engines use, as Settings → Engines and 'filee engines' show it.</summary>
+/// <param name="Folder">Folder of the copy in use while the status is <see cref="EngineCopyStatus.OwnCopy"/>.</param>
+/// <param name="FromSystem">That copy was found on the PC (PATH, Program Files), not chosen by the user.</param>
+/// <param name="Outdated">Filee's download is older than the version engines.json pins.</param>
+public sealed record EngineCopy(EngineCopyStatus Status, string? Folder, bool FromSystem, bool Outdated);
+
+/// <summary>Another Filee (the app, the CLI or a second copy) is installing or removing the same package.</summary>
+public sealed class EngineBusyException(string packageId)
+    : IOException($"{packageId} is being installed by another Filee. Try again when it has finished.")
+{
+    public string PackageId { get; } = packageId;
+}
 
 /// <summary>Installs and removes <see cref="EnginePackage"/>s.</summary>
 public sealed class EngineInstaller
@@ -52,6 +77,39 @@ public sealed class EngineInstaller
         _logger = logger ?? NullLogger.Instance;
     }
 
+    /// <summary>
+    /// The client to create an installer with: automatic redirects off, because the installer follows them itself
+    /// (mirrors may use plain HTTP; every file is checked against its SHA-256), and Filee's user agent.
+    /// </summary>
+    public static HttpClient CreateHttpClient(TimeSpan timeout)
+    {
+        var http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = timeout };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd($"Filee/{typeof(EngineInstaller).Assembly.GetName().Version}");
+        return http;
+    }
+
+    /// <summary>Folder that receives one sub folder per engine.</summary>
+    public string Root => _root;
+
+    /// <summary>The downloads this installer knows: engines.json for this computer unless a test passed its own.</summary>
+    public IReadOnlyDictionary<string, EngineComponent> Components => _components;
+
+    /// <summary>
+    /// The copy the engines use, in the order they look: the user's own copy, Filee's download, a copy on the PC
+    /// (only looked for when neither of the others is there).
+    /// </summary>
+    public EngineCopy StatusOf(EnginePackage package)
+    {
+        var installed = IsInstalled(package);
+        var own = EngineEnvironment.OwnCopyFolder(package.Id);
+        var system = own is null && !installed ? EngineEnvironment.SystemCopyFolder(package.Id) : null;
+        var folder = own ?? system;
+        var status = folder is not null ? EngineCopyStatus.OwnCopy
+            : installed ? EngineCopyStatus.Installed
+            : EngineCopyStatus.NotInstalled;
+        return new EngineCopy(status, folder, system is not null, folder is null && installed && !IsUpToDate(package));
+    }
+
     /// <summary>True when every component is installed (any version).</summary>
     public bool IsInstalled(EnginePackage package) => package.Components.All(c => _components.ContainsKey(c) && Marker(c) is not null);
 
@@ -66,6 +124,8 @@ public sealed class EngineInstaller
         if (package.Components.Any(c => !_components.ContainsKey(c)))
             throw new PlatformNotSupportedException(EngineDownloads.UnavailableReason(package)
                 ?? $"The {package.Id} package is unavailable on this platform.");
+        using var packageLock = LockPackage(package);
+        ClearAside(package);
         var pending = package.Components
             .Where(c => !string.Equals(Marker(c), _components[c].Sha256, StringComparison.OrdinalIgnoreCase))
             .Select(c => _components[c])
@@ -98,14 +158,82 @@ public sealed class EngineInstaller
             CopyRuntime(package);
     }
 
-    /// <summary>Removes the package's folders. Fails if an engine is running (its files are locked).</summary>
+    /// <summary>
+    /// Removes the package's folders. Fails if an engine is running (its files are locked), and then leaves the package
+    /// as it was: each folder is first moved aside to a "~" name (on Windows that fails while a file in it is open), and
+    /// only once all of them are aside are they deleted. A delete Windows cuts short leaves a "~" folder, which no engine
+    /// reads and the next install or removal clears (#963).
+    /// </summary>
     public void Uninstall(EnginePackage package)
     {
-        foreach (var id in package.Components)
+        using var packageLock = LockPackage(package);
+        ClearAside(package);
+        var aside = new List<(string Folder, string Moved)>();
+        try
         {
-            var folder = FolderOf(id);
-            if (Directory.Exists(folder))
-                Directory.Delete(folder, recursive: true);
+            foreach (var id in package.Components)
+            {
+                var folder = FolderOf(id);
+                if (!Directory.Exists(folder))
+                    continue;
+                var moved = Path.Combine(_root, $"{AsidePrefix}{id}-{Guid.NewGuid().ToString("N")[..8]}");
+                Directory.Move(folder, moved);
+                aside.Add((folder, moved));
+            }
+        }
+        catch
+        {
+            // One folder is in use: put back the ones already moved, so the package stays whole and installed.
+            foreach (var (folder, moved) in aside)
+                Directory.Move(moved, folder);
+            throw;
+        }
+        foreach (var (_, moved) in aside)
+            TryDeleteFolder(moved);
+    }
+
+    /// <summary>Start of the name of a folder an earlier removal moved aside but couldn't delete.</summary>
+    private const string AsidePrefix = "~removed-";
+
+    /// <summary>Deletes what an earlier removal of the package left aside (under the package's lock).</summary>
+    private void ClearAside(EnginePackage package)
+    {
+        if (!Directory.Exists(_root))
+            return;
+        foreach (var id in package.Components)
+            foreach (var folder in Directory.EnumerateDirectories(_root, $"{AsidePrefix}{id}-*"))
+                TryDeleteFolder(folder);
+    }
+
+    private static void TryDeleteFolder(string folder)
+    {
+        try
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Left for the next install or removal (ClearAside).
+        }
+    }
+
+    /// <summary>
+    /// Holds the package's lock file (.downloads/locks/&lt;id&gt;.lock) while it is installed or removed, so two Filee
+    /// processes never write the same download or replace the same folder at once. The file stays; the open handle
+    /// is the lock (deleting it on close would let a third process lock a new file while a second still holds the old).
+    /// </summary>
+    /// <exception cref="EngineBusyException">Another process holds the lock.</exception>
+    private FileStream LockPackage(EnginePackage package)
+    {
+        var locks = Path.Combine(_root, ".downloads", "locks");
+        Directory.CreateDirectory(locks);
+        try
+        {
+            return new FileStream(Path.Combine(locks, package.Id + ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException ex) when (ex is not (FileNotFoundException or DirectoryNotFoundException or PathTooLongException))
+        {
+            throw new EngineBusyException(package.Id);
         }
     }
 
@@ -121,9 +249,30 @@ public sealed class EngineInstaller
         using var response = await GetFollowingRedirectsAsync(new Uri(component.Url), cancellationToken);
         response.EnsureSuccessStatusCode();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
-        await using (var target = File.Create(partial))
+        try
         {
+            await CopyAsync();
+        }
+        catch
+        {
+            // Cancelled or cut off: the partial download (up to ~420 MB for LibreOffice) isn't kept (#963).
+            TryDelete(partial);
+            throw;
+        }
+
+        var actual = Convert.ToHexString(hash.GetHashAndReset());
+        if (!string.Equals(actual, component.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            TryDelete(partial);
+            throw new InvalidDataException($"{component.Id}: checksum mismatch (expected {component.Sha256}, got {actual}). The download was discarded.");
+        }
+        File.Move(partial, file, overwrite: true);
+        return file;
+
+        async Task CopyAsync()
+        {
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using var target = File.Create(partial);
             var buffer = new byte[1 << 16];
             long received = 0;
             var lastReport = Stopwatch.StartNew();
@@ -141,15 +290,6 @@ public sealed class EngineInstaller
             }
             reportBytes(received);
         }
-
-        var actual = Convert.ToHexString(hash.GetHashAndReset());
-        if (!string.Equals(actual, component.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            TryDelete(partial);
-            throw new InvalidDataException($"{component.Id}: checksum mismatch (expected {component.Sha256}, got {actual}). The download was discarded.");
-        }
-        File.Move(partial, file, overwrite: true);
-        return file;
     }
 
     /// <summary>
@@ -203,6 +343,28 @@ public sealed class EngineInstaller
                     break;
                 case "conda":
                     UnpackConda(file, staging, cancellationToken);
+                    Replace(component.Id, staging);
+                    break;
+                case "traineddata":
+                    // One Tesseract language (OcrLanguages): the file as it is, in a folder of its own.
+                    Directory.CreateDirectory(staging);
+                    File.Copy(file, Path.Combine(staging, component.Id + ".traineddata"));
+                    Replace(component.Id, staging);
+                    break;
+                case "model":
+                case "bin":
+                    // Standalone AI model file (e.g. Whisper ggml-base.bin): copied directly into its component folder.
+                    Directory.CreateDirectory(staging);
+                    var modelFileName = Path.GetFileName(new Uri(component.Url).LocalPath);
+                    File.Copy(file, Path.Combine(staging, modelFileName));
+                    Replace(component.Id, staging);
+                    break;
+                case "nsis":
+                    var sevenZip = Archives.SevenZip.Locate()
+                                   ?? throw new InvalidOperationException($"{component.Id} needs Filee's 7-Zip, which is missing.");
+                    Directory.CreateDirectory(staging);
+                    await sevenZip.ExtractAsync(file, staging, [], _root, cancellationToken);
+                    TrimTesseract(staging);
                     Replace(component.Id, staging);
                     break;
                 case "oxt":
@@ -323,11 +485,17 @@ public sealed class EngineInstaller
         return libreOffice;
     }
 
-    private static async Task UnpackMsiAsync(string id, string msi, string target, string log, CancellationToken cancellationToken)
+    private async Task UnpackMsiAsync(string id, string msi, string target, string log, CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException($"The {id} package is a Windows installer.");
         Directory.CreateDirectory(target);
+        // The Installer service won't follow a junction a user made (#527); Filee keeps using its own paths.
+        // The log too: through a link it can't be written (1622), as when %TEMP% has moved with AppData\Local.
+        msi = RealPath.Of(msi);
+        target = RealPath.Of(target);
+        log = Path.Combine(RealPath.Of(Path.GetDirectoryName(log)!), Path.GetFileName(log));
+        _logger.LogInformation("Unpacking {Component} with msiexec: {Msi} to {Target}, log {Log}", id, msi, target, log);
         // msiexec parses its own command line: the property value must be quoted as TARGETDIR="...", so the
         // argument list escaping of ProcessRunner cannot be used here.
         using var process = Process.Start(new ProcessStartInfo("msiexec.exe", $"/a \"{msi}\" /qn /l*v \"{log}\" TARGETDIR=\"{target}\"")
@@ -347,14 +515,24 @@ public sealed class EngineInstaller
             throw;
         }
         if (process.ExitCode != 0)
+            throw MsiFailure(id, process.ExitCode, log);
+        // The verbose log is only worth keeping when unpacking failed (the error names it); else it would stay in %TEMP%.
+        try
         {
-            throw new InvalidOperationException(process.ExitCode switch
-            {
-                1618 => "Another installation is running. Try again when it has finished.",
-                _ => $"Unpacking {id} failed (msiexec exit code {process.ExitCode}, log: {log}).",
-            });
+            File.Delete(log);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
         }
     }
+
+    /// <summary>What the Engines card shows: the reasons a user can act on in their language (error.* keys).</summary>
+    internal static Exception MsiFailure(string id, int exitCode, string log) => exitCode switch
+    {
+        1618 => new ConversionRefusedException("error.msi_busy"),
+        1620 => new ConversionRefusedException("error.msi_link", $"msiexec 1620, log: {log}"),
+        _ => new InvalidOperationException($"Unpacking {id} failed (msiexec exit code {exitCode}, log: {log})."),
+    };
 
     /// <summary>
     /// Removes what headless conversion never uses (~500 MB): help, readmes, the MSI copy, the gallery and spelling
@@ -378,6 +556,26 @@ public sealed class EngineInstaller
                 if (Path.GetFileName(dictionary) is not ("dict-en" or "dict-ko"))
                     Directory.Delete(dictionary, recursive: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// Removes what OCR never uses (~80 MB): the training programs and their manuals, the installer's own files and
+    /// the bundled language data (Filee downloads its own, see OcrLanguages). tesseract.exe, its DLLs and the
+    /// licenses in doc/ stay.
+    /// </summary>
+    internal static void TrimTesseract(string root)
+    {
+        foreach (var folder in new[] { "$PLUGINSDIR", "tessdata" })
+        {
+            var path = Path.Combine(root, folder);
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        foreach (var file in Directory.EnumerateFiles(root, "*.exe").Concat(Directory.EnumerateFiles(root, "*.html")).ToList())
+        {
+            if (!string.Equals(Path.GetFileName(file), "tesseract.exe", StringComparison.OrdinalIgnoreCase))
+                File.Delete(file);
         }
     }
 
@@ -443,7 +641,7 @@ public sealed class EngineInstaller
     /// <summary>Makes <paramref name="source"/> the engine folder, replacing a previous version.</summary>
     private void Replace(string id, string source)
     {
-        RequiredProgramFolder(id, source, _components[id].Kind is "msi" or "conda" || OperatingSystem.IsWindows());
+        RequiredProgramFolder(id, source, _components[id].Kind is "msi" or "conda" or "nsis" || OperatingSystem.IsWindows());
         var target = FolderOf(id);
         if (Directory.Exists(target))
             Directory.Delete(target, recursive: true);

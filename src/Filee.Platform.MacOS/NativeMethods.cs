@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Filee.Core.Settings;
 
 namespace Filee.Platform.MacOS;
 
@@ -16,6 +17,23 @@ internal static class NativeMethods
     private static readonly nint PidKey = CFStringCreateWithCString(0, "kCGWindowOwnerPID", 0x08000100);
     private static readonly nint AlphaKey = CFStringCreateWithCString(0, "kCGWindowAlpha", 0x08000100);
     private static readonly nint LayerKey = CFStringCreateWithCString(0, "kCGWindowLayer", 0x08000100);
+    private static readonly nint IsAliasFileKey = CoreFoundationConstant("kCFURLIsAliasFileKey");
+    private static readonly nint BooleanTrue = CoreFoundationConstant("kCFBooleanTrue");
+
+    private static nint CoreFoundationConstant(string name) =>
+        Marshal.ReadIntPtr(NativeLibrary.GetExport(NativeLibrary.Load(CoreFoundation), name));
+
+    /// <summary>The modifier keys held now (kCGEventSourceStateCombinedSessionState: every keyboard, including posted keys).</summary>
+    internal static ModifierKeys CurrentModifiers()
+    {
+        var flags = CGEventSourceFlagsState(0);
+        var keys = ModifierKeys.None;
+        if ((flags & 0x20000) != 0) keys |= ModifierKeys.Shift;   // kCGEventFlagMaskShift
+        if ((flags & 0x40000) != 0) keys |= ModifierKeys.Ctrl;    // kCGEventFlagMaskControl
+        if ((flags & 0x80000) != 0) keys |= ModifierKeys.Alt;     // kCGEventFlagMaskAlternate (Option)
+        if ((flags & 0x100000) != 0) keys |= ModifierKeys.Meta;   // kCGEventFlagMaskCommand
+        return keys;
+    }
 
     /// <summary>Process names of the app windows on screen (layer 0), front to back.</summary>
     internal static IEnumerable<string> WindowOwnerNames()
@@ -108,6 +126,24 @@ internal static class NativeMethods
         return Marshal.PtrToStringUTF8(Send(bundle, sel_registerName("UTF8String"))) == "com.apple.finder";
     }
 
+    /// <summary>The process id of the app in front (NSWorkspace.frontmostApplication), 0 if none.</summary>
+    internal static int FrontmostProcessId()
+    {
+        using var pool = new AutoreleasePool();
+        var workspace = Send(objc_getClass("NSWorkspace"), sel_registerName("sharedWorkspace"));
+        var application = Send(workspace, sel_registerName("frontmostApplication"));
+        return application == 0 ? 0 : (int)Send(application, sel_registerName("processIdentifier"));
+    }
+
+    /// <summary>Brings the app with process id <paramref name="pid"/> to the front, if it still runs.</summary>
+    internal static void ActivateProcess(int pid)
+    {
+        using var pool = new AutoreleasePool();
+        var application = Send(objc_getClass("NSRunningApplication"), sel_registerName("runningApplicationWithProcessIdentifier:"), pid);
+        if (application != 0)
+            SendBool(application, sel_registerName("activateWithOptions:"), 0);
+    }
+
     internal static bool PrefersReducedMotion()
     {
         using var pool = new AutoreleasePool();
@@ -121,15 +157,38 @@ internal static class NativeMethods
         const nint fullScreenPrimary = 1 << 7, fullScreenAuxiliary = 1 << 8, fullScreenNone = 1 << 9;
         var behavior = Send(window, sel_registerName("collectionBehavior"));
         behavior = (behavior & ~(moveToActiveSpace | fullScreenPrimary | fullScreenNone)) | canJoinAllSpaces | fullScreenAuxiliary;
-        if (OperatingSystem.IsMacOSVersionAtLeast(13))
-        {
-            const nint primary = 1 << 16, auxiliary = 1 << 17, canJoinAllApplications = 1 << 18;
-            behavior = (behavior & ~(primary | auxiliary)) | canJoinAllApplications;
-        }
+        // macOS 13's primary, auxiliary and canJoinAllApplications: with canJoinAllApplications set the donut still
+        // stays off a full-screen Finder Space, even as a panel (#251).
+        behavior &= ~((1 << 16) | (1 << 17) | (1 << 18));
         // Finder can occupy a full-screen Space that would otherwise hide another app's toolbar.
         SendInteger(window, sel_registerName("setCollectionBehavior:"), behavior);
+        // A non-activating panel can join another app's full-screen Space while Filee remains in the Dock (#251).
+        // Restore AvnWindow when hidden and before close so AppKit's KVO cleanup sees the initialized class (#805).
+        var panel = objc_getClass("AvnPanel");
+        if (panel != 0 && object_getClass(window) == objc_getClass("AvnWindow"))
+        {
+            object_setClass(window, panel);
+            const nint nonactivatingPanel = 1 << 7;
+            SendInteger(window, sel_registerName("setStyleMask:"), Send(window, sel_registerName("styleMask")) | nonactivatingPanel);
+            SendInteger(window, sel_registerName("setHidesOnDeactivate:"), 0);
+        }
         SendInteger(window, sel_registerName("setLevel:"), 3);
         SendVoid(window, sel_registerName("orderFrontRegardless"));
+    }
+
+    internal static void RestoreWindow(nint window)
+    {
+        if (window == 0)
+            return;
+
+        var panel = objc_getClass("AvnPanel");
+        var avnWindow = objc_getClass("AvnWindow");
+        if (panel == 0 || avnWindow == 0 || object_getClass(window) != panel)
+            return;
+
+        const nint nonactivatingPanel = 1 << 7;
+        SendInteger(window, sel_registerName("setStyleMask:"), Send(window, sel_registerName("styleMask")) & ~nonactivatingPanel);
+        object_setClass(window, avnWindow);
     }
 
     /// <summary>
@@ -180,6 +239,157 @@ internal static class NativeMethods
             SendInteger(application, sel_registerName("activateIgnoringOtherApps:"), 1);
         return succeeded;
     }
+
+    /// <summary>
+    /// NSFileManager trashItemAtURL: the file goes to the Trash of its volume, where Finder can put it back. Null when
+    /// it worked, else the reason macOS gives.
+    /// </summary>
+    public static Filee.Core.Platform.TrashRefusal? MoveToTrash(string path)
+    {
+        using var pool = new AutoreleasePool();
+        var text = CFStringCreateWithCString(0, Path.GetFullPath(path), 0x08000100);
+        try
+        {
+            var url = Send(objc_getClass("NSURL"), sel_registerName("fileURLWithPath:"), text);
+            var manager = Send(objc_getClass("NSFileManager"), sel_registerName("defaultManager"));
+            if (SendTrash(manager, sel_registerName("trashItemAtURL:resultingItemURL:error:"), url, 0, out var error))
+                return null;
+            var description = error == 0 ? 0 : Send(error, sel_registerName("localizedDescription"));
+            return new Filee.Core.Platform.TrashRefusal("trash.failed",
+                description == 0 ? null : Marshal.PtrToStringUTF8(Send(description, sel_registerName("UTF8String"))));
+        }
+        finally
+        {
+            CFRelease(text);
+        }
+    }
+
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool SendTrash(nint receiver, nint selector, nint url, nint resultingUrl, out nint error);
+
+    /// <summary>
+    /// The existing file or folder the Finder alias at <paramref name="path"/> points to; null for anything that
+    /// isn't an alias, a broken alias, one whose target is in a Trash, or one whose target is on a volume that isn't
+    /// mounted: resolving never shows UI or mounts a server, since a drag waits on it.
+    /// </summary>
+    internal static string? AliasTarget(string path)
+    {
+        const nuint withoutUi = 1 << 8, withoutMounting = 1 << 9;
+        var url = FileUrl(path);
+        if (url == 0)
+            return null;
+        nint data = 0, target = 0;
+        try
+        {
+            // Every dropped path comes through here, on the UI thread: only an alias (metadata, no read) is opened.
+            if (!IsAliasFile(url))
+                return null;
+            data = CFURLCreateBookmarkDataFromFile(0, url, out var error);
+            if (data == 0)
+            {
+                Release(error);
+                return null;
+            }
+            target = CFURLCreateByResolvingBookmarkData(0, data, withoutUi | withoutMounting, 0, 0, out _, out error);
+            Release(error);
+            if (target == 0)
+                return null;
+            var buffer = new byte[4096];
+            if (!CFURLGetFileSystemRepresentation(target, true, buffer, buffer.Length))
+                return null;
+            // The file system representation is decomposed (NFD); dropped paths and the names Filee writes are
+            // composed, and APFS and HFS+ find the file either way, so a "보고서" alias and its target match.
+            var resolved = System.Text.Encoding.UTF8.GetString(buffer, 0, Array.IndexOf(buffer, (byte)0))
+                .Normalize(System.Text.NormalizationForm.FormC);
+            // A bookmark follows its file into the Trash, where a converted copy would be lost: that alias is broken.
+            return !InTrash(resolved) && (File.Exists(resolved) || Directory.Exists(resolved)) ? resolved : null;
+        }
+        finally
+        {
+            Release(target);
+            Release(data);
+            CFRelease(url);
+        }
+    }
+
+    /// <summary>Writes a Finder alias at <paramref name="path"/> to <paramref name="target"/> (for the tests).</summary>
+    internal static void CreateAlias(string path, string target)
+    {
+        const nuint suitableForBookmarkFile = 1 << 10;
+        var targetUrl = FileUrl(target);
+        var aliasUrl = FileUrl(path);
+        nint data = 0;
+        try
+        {
+            data = CFURLCreateBookmarkData(0, targetUrl, suitableForBookmarkFile, 0, 0, out var error);
+            if (data == 0 || !CFURLWriteBookmarkDataToFile(data, aliasUrl, 0, out error))
+            {
+                Release(error);
+                throw new IOException($"Could not write an alias at {path}.");
+            }
+        }
+        finally
+        {
+            Release(data);
+            Release(aliasUrl);
+            Release(targetUrl);
+        }
+    }
+
+    private static bool IsAliasFile(nint url)
+    {
+        if (!CFURLCopyResourcePropertyForKey(url, IsAliasFileKey, out var value, out var error))
+        {
+            Release(error);
+            return false;
+        }
+        var isAlias = value == BooleanTrue;
+        Release(value);
+        return isAlias;
+    }
+
+    private static bool InTrash(string path)
+    {
+        var trash = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".Trash") + "/";
+        return (path + "/").StartsWith(trash, StringComparison.Ordinal) || path.Contains("/.Trashes/", StringComparison.Ordinal);
+    }
+
+    private static nint FileUrl(string path)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(path));
+        return CFURLCreateFromFileSystemRepresentation(0, bytes, bytes.Length, Directory.Exists(path));
+    }
+
+    private static void Release(nint value)
+    {
+        if (value != 0)
+            CFRelease(value);
+    }
+
+    [DllImport(CoreFoundation)]
+    private static extern nint CFURLCreateFromFileSystemRepresentation(nint allocator, byte[] buffer, nint length, [MarshalAs(UnmanagedType.I1)] bool isDirectory);
+
+    [DllImport(CoreFoundation)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool CFURLGetFileSystemRepresentation(nint url, [MarshalAs(UnmanagedType.I1)] bool resolveAgainstBase, byte[] buffer, nint maxLength);
+
+    [DllImport(CoreFoundation)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool CFURLCopyResourcePropertyForKey(nint url, nint key, out nint value, out nint error);
+
+    [DllImport(CoreFoundation)]
+    private static extern nint CFURLCreateBookmarkDataFromFile(nint allocator, nint fileUrl, out nint error);
+
+    [DllImport(CoreFoundation)]
+    private static extern nint CFURLCreateByResolvingBookmarkData(nint allocator, nint bookmark, nuint options, nint relativeToUrl, nint resourcePropertiesToInclude, [MarshalAs(UnmanagedType.I1)] out bool isStale, out nint error);
+
+    [DllImport(CoreFoundation)]
+    private static extern nint CFURLCreateBookmarkData(nint allocator, nint url, nuint options, nint resourcePropertiesToInclude, nint relativeToUrl, out nint error);
+
+    [DllImport(CoreFoundation)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool CFURLWriteBookmarkDataToFile(nint bookmark, nint fileUrl, nuint options, out nint error);
 
     private readonly struct AutoreleasePool : IDisposable
     {
@@ -232,6 +442,9 @@ internal static class NativeMethods
     private static extern nint CGWindowListCopyWindowInfo(uint option, uint relativeToWindow);
 
     [DllImport(CoreGraphics)]
+    private static extern ulong CGEventSourceFlagsState(int stateId);
+
+    [DllImport(CoreGraphics)]
     [return: MarshalAs(UnmanagedType.I1)]
     private static extern bool CGRectMakeWithDictionaryRepresentation(nint dictionary, out CGRect rect);
 
@@ -260,6 +473,12 @@ internal static class NativeMethods
 
     [DllImport(ObjC)]
     private static extern nint objc_getClass([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
+    [DllImport(ObjC)]
+    private static extern nint object_getClass(nint instance);
+
+    [DllImport(ObjC)]
+    private static extern nint object_setClass(nint instance, nint cls);
 
     [DllImport(ObjC)]
     private static extern nint sel_registerName([MarshalAs(UnmanagedType.LPUTF8Str)] string name);

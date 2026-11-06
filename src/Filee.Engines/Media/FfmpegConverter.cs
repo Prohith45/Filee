@@ -6,7 +6,8 @@
 // in HardwareVideo (options) and HardwareProbe (which one works here).
 // Live / Motion Photos (Android, iPhone) give their video when a preset asks for it (LivePhotoSource, MotionPhoto), and
 // a clip of a video becomes one (LivePhotoWriter). Clips and pictures are joined into one file by IMediaJoiner
-// (MediaJoining), and "Remove metadata" copies a file's streams without its tags.
+// (MediaJoining), and "Remove metadata" copies a file's streams without its tags. "Cut a clip" copies or encodes a part
+// of a video (CutClipAsync).
 
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
@@ -123,7 +124,7 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         if (step.MotionPhoto)
             return await ExtractMotionAsync(step, progress, cancellationToken);
         if (step.LivePhoto)
-            return await LivePhotoWriter.ConvertAsync(ffmpeg, ffprobe, step, EncodersOf(ffmpeg), filter => HasFilter(ffmpeg, filter),
+            return await LivePhotoWriter.ConvertAsync(ffmpeg, ffprobe, step, await EncodersOfAsync(ffmpeg), filter => HasFilter(ffmpeg, filter),
                 progress, cancellationToken);
         if (step.To == "heic")
             return await HeicWriter.ConvertAsync(ffmpeg, step, progress, cancellationToken);
@@ -133,6 +134,8 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
 
         if (step.FrameSequence)
             return await FrameSequenceWriter.ConvertAsync(ffmpeg, step, input, info, progress, cancellationToken);
+        if (step.Preset.CutsClipOf(step.From) && MediaEncoding.VideoTargets.ContainsKey(step.To))
+            return await CutClipAsync(ffmpeg, ffprobe, step, input, info, progress, cancellationToken);
 
         // A PNG is a still picture (from the image engines), shown for a few seconds.
         var still = step.From == "png";
@@ -154,49 +157,7 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
             if (step.To is "gif" or "apng" || (still && !MediaEncoding.VideoTargets.ContainsKey(step.To)))
                 throw new ConversionRefusedException("error.size_target_animation");
 
-            if (MediaEncoding.VideoTargets.ContainsKey(step.To))
-            {
-                var durationSec = info.Duration?.TotalSeconds ?? 0;
-                if (durationSec <= 0)
-                    throw new ConversionRefusedException("error.size_target_too_small", "0");
-
-                var hasAudio = info.AudioTracks.Count > 0;
-                var sourceAudioKbps = hasAudio && info.AudioTracks[0].Bitrate > 0 ? (int)(info.AudioTracks[0].Bitrate / 1000) : 128;
-                var audioKbps = hasAudio && !media.RemoveAudio ? Math.Min(sourceAudioKbps, 128) : 0;
-
-                // 3% container overhead
-                var bits = targetBytes * 8.0 * 0.97;
-                var videoKbps = (int)Math.Floor((bits / durationSec - audioKbps * 1000.0) / 1000.0);
-
-                var width = info.Video?.Width ?? 1920;
-                var height = info.Video?.Height ?? 1080;
-                var fps = info.Video?.FrameRate is > 0 and < 240 ? info.Video.FrameRate : 30.0;
-                var floor = (int)(0.06 * width * height * fps / 1000.0);
-
-                int[] heightSteps = [1080, 720, 480, 360, 240];
-                int targetHeight = 0;
-
-                while (videoKbps < floor && height > 240)
-                {
-                    var nextH = heightSteps.FirstOrDefault(h => h < height);
-                    if (nextH == 0) break;
-                    var w = (int)Math.Round((double)width * nextH / height);
-                    floor = (int)(0.06 * w * nextH * fps / 1000.0);
-                    height = nextH;
-                    targetHeight = nextH;
-                }
-
-                if (videoKbps < floor || videoKbps < 50)
-                    throw new ConversionRefusedException("error.size_target_too_small", $"{Math.Max(floor, 50)} kbps");
-
-                if (targetHeight > 0 && (media.MaxHeight <= 0 || media.MaxHeight > targetHeight))
-                    media.MaxHeight = targetHeight;
-
-                media.TargetVideoKbps = videoKbps;
-                if (audioKbps > 0)
-                    media.AudioBitrateKbps = audioKbps;
-            }
-            else if (MediaEncoding.AudioTargets.ContainsKey(step.To))
+            if (MediaEncoding.AudioTargets.ContainsKey(step.To))
             {
                 var durationSec = info.Duration?.TotalSeconds ?? 0;
                 if (durationSec <= 0)
@@ -206,22 +167,18 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
                 if (rawKbps < 24)
                     throw new ConversionRefusedException("error.size_target_too_small", "24 kbps");
 
-                var kbps = (int)Math.Clamp(Math.Round(rawKbps), 24, 320);
+                var kbpsAudio = (int)Math.Clamp(Math.Round(rawKbps), 24, 320);
                 if (info.AudioTracks.Count > 0 && info.AudioTracks[0].Bitrate > 0)
                 {
                     var srcAudioKbps = (int)(info.AudioTracks[0].Bitrate / 1000);
-                    if (kbps >= srcAudioKbps)
+                    if (kbpsAudio >= srcAudioKbps)
                     {
                         step.Notice?.Invoke("notice.size_already_small");
                         return [];
                     }
                 }
 
-                media.AudioBitrateKbps = kbps;
-            }
-            else
-            {
-                throw new ConversionRefusedException("error.size_target_unsupported", step.To.ToUpperInvariant());
+                media.AudioBitrateKbps = kbpsAudio;
             }
         }
 
@@ -252,10 +209,36 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
             return [output];
         }
 
-        var encoders = still ? null : EncodersOf(ffmpeg);
+        // The size limit (#553, #680): refused before anything is encoded when not even a low bitrate fits, else one encode with
+        // the bitrate capped at what fits (MediaEncoding.ForSizeLimit), and another at that bitrate only if it missed.
+        var source = step.OriginalSourcePath ?? step.InputPath;
+        var limit = !still && MediaEncoding.VideoTargets.ContainsKey(step.To)
+            ? (step.Preset.TargetSizeBytes ?? SizeLimit.ForVideo(media, source))
+            : 0;
+        var kbps = 0;
+        if (limit > 0)
+        {
+            (media, kbps) = MediaEncoding.ForSizeLimit(media, info, limit);
+            if (kbps == 0 && info.Duration is { TotalSeconds: > 0 })
+            {
+                var detail = media.MaxSizePercent > 0
+                    ? $"{info.Duration.Value.TotalSeconds:0} s in {media.MaxSizePercent}%"
+                    : $"{info.Duration.Value.TotalSeconds:0} s in {media.MaxSizeMb:0.##} MB";
+                throw new ConversionRefusedException("error.over_size_limit", detail);
+            }
+        }
+
+        // "Crop video" (#830): the box inside the black bars is found before anything is encoded.
+        var crop = !still && VideoCrop.Crops(media.CropFrame) && MediaEncoding.VideoTargets.ContainsKey(step.To) && info.Video is { } shown
+            ? await CropFilterAsync(ffmpeg, input, media.CropFrame, shown, info.Duration, cancellationToken)
+            : null;
+
+        var encoders = still ? null : await EncodersOfAsync(ffmpeg);
+        if (crop is not null)
+            media = MediaEncoding.CropOptions(step.To, media, info.Video!, encoders);
         // Hardware encoding (preset option): the first GPU encoder that passes its test encode, if any.
         HardwareEncoder? hardware = null;
-        if (!still && MediaEncoding.HardwareCodec(step.To, media, info) is { } codec)
+        if (!still && MediaEncoding.HardwareCodec(step.To, media, info, encode: crop is not null) is { } codec)
         {
             var tenBit = HardwareVideo.TenBit(codec, info.Video!);
             hardware = SelectHardware is { } select
@@ -267,40 +250,19 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         var speed = step.To is "gif" or "apng" ? step.Preset.Image.PlaybackSpeed : 1;
         IReadOnlyList<FfmpegPass> Plan(HardwareEncoder? encoder) => still
             ? MediaEncoding.PlanStill(input, output, step.To, media, info)
-            : MediaEncoding.Plan(input, output, step.To, media, info, step.WorkDirectory, cover, encoders, encoder, speed);
+            : MediaEncoding.Plan(input, output, step.To, media, info, step.WorkDirectory, cover, encoders, encoder, speed, crop: crop);
         // Throws for a missing stream before anything is written (an existing file of that name stays untouched).
-        var passes = Plan(hardware);
+        var passes = kbps > 0 ? MediaEncoding.WithMaxRate(Plan(hardware), kbps) : Plan(hardware);
         // FFmpeg reports the position in the output, which a speed change makes longer or shorter.
         var duration = still ? MediaEncoding.StillDuration : info.Duration / speed;
+        // With a size limit the first encode takes most of the bar, a second one (if needed) the rest.
+        var encoding = limit > 0 && progress is not null ? new Progress<double>(p => progress.Report(p * 0.9)) : progress;
         try
         {
             await RunWithFallbackAsync(passes, hardware, Plan,
-                planned => RunPassesAsync(ffmpeg, planned, output, duration, progress, cancellationToken), output, _logger, cancellationToken);
-
-            if (step.Preset.TargetSizeBytes is { } targetSize && MediaEncoding.VideoTargets.ContainsKey(step.To))
-            {
-                if (File.Exists(output))
-                {
-                    var actualSize = new FileInfo(output).Length;
-                    if (actualSize > targetSize * 1.03)
-                    {
-                        var newKbps = (int)Math.Max(50, media.TargetVideoKbps * ((double)targetSize / actualSize) * 0.95);
-                        if (newKbps < media.TargetVideoKbps)
-                        {
-                            media.TargetVideoKbps = newKbps;
-                            passes = Plan(hardware);
-                            await RunWithFallbackAsync(passes, hardware, Plan,
-                                planned => RunPassesAsync(ffmpeg, planned, output, duration, progress, cancellationToken), output, _logger, cancellationToken);
-                            actualSize = new FileInfo(output).Length;
-                        }
-                    }
-
-                    if (actualSize > targetSize)
-                    {
-                        step.Notice?.Invoke("notice.size_target_not_reached");
-                    }
-                }
-            }
+                planned => RunPassesAsync(ffmpeg, planned, output, duration, encoding, cancellationToken), output, _logger, cancellationToken);
+            if (limit > 0)
+                await FitAgainAsync(ffmpeg, step, input, output, media, info, encoders, cover, crop, limit, kbps, progress, cancellationToken);
         }
         catch
         {
@@ -311,6 +273,66 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
 
         progress?.Report(1);
         return [output];
+    }
+
+    /// <summary>
+    /// The size limit (#553), after the capped encode: usually it fits. A bitrate is an average, so when it missed, the
+    /// video is encoded once more at a bitrate as much lower as it missed by, on the rest of the progress bar. Refuses
+    /// when that still doesn't fit (or the length is unknown), rather than hand over a file too large.
+    /// </summary>
+    private static async Task FitAgainAsync(string ffmpeg, ConversionStep step, string input, string output, MediaOptions fitting,
+        MediaInfo info, IReadOnlySet<string>? encoders, CoverExtras? cover, string? crop, long limit, int kbps, IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var size = new FileInfo(output).Length;
+        if (size > limit && kbps > 0)
+        {
+            kbps = (int)(kbps * (double)limit / size * 0.95);
+            var again = progress is null ? null : new Progress<double>(p => progress.Report(0.9 + p * 0.1));
+            var passes = MediaEncoding.AtBitrate(MediaEncoding.Plan(input, output, step.To, fitting, info, step.WorkDirectory, cover, encoders, null, 1, crop: crop), kbps);
+            await RunPassesAsync(ffmpeg, passes, output, info.Duration, again, cancellationToken);
+            size = new FileInfo(output).Length;
+        }
+        if (size > limit)
+            throw new ConversionRefusedException("error.over_size_limit", SizeLimit.Describe(size, limit));
+    }
+
+    /// <summary>
+    /// The filters that crop the frame for "Crop video": to the ratio, or (<see cref="VideoCrop.Auto"/>) to the largest
+    /// box cropdetect ends a few stretches of the video with. Refuses when that is the whole frame, rather than encode
+    /// the video again as it was.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">cropdetect failed, or wrote nothing, on every stretch.</exception>
+    private static async Task<string> CropFilterAsync(string ffmpeg, string input, string frame, VideoStreamInfo video, TimeSpan? duration,
+        CancellationToken cancellationToken)
+    {
+        if (VideoCrop.TryParseRatio(frame, out var width, out var height))
+        {
+            var ratio = MediaEncoding.RatioBox(video, width, height);
+            return MediaEncoding.IsWholeFrame(ratio, video)
+                ? throw new ConversionRefusedException("error.crop_same_frame", frame)
+                : MediaEncoding.CropFilter(video, ratio);
+        }
+        var boxes = new List<CropBox?>();
+        var detected = false;
+        var failure = "";
+        foreach (var (at, seconds) in MediaEncoding.CropDetectStretches(duration?.TotalSeconds))
+        {
+            var result = await FfmpegRunner.RunAsync(ffmpeg, MediaEncoding.CropDetect(input, at, seconds, video), null, cancellationToken);
+            var lines = result.StandardError.Split('\n');
+            if (result.ExitCode != 0 || !MediaEncoding.HasCropLine(lines))
+            {
+                failure = result.StandardError.Trim();
+                continue;
+            }
+            detected = true;
+            boxes.Add(MediaEncoding.FinalCrop(lines));
+        }
+        if (!detected)
+            throw new InvalidOperationException($"FFmpeg could not look for black bars: {failure}");
+        if (MediaEncoding.LargestCrop(boxes) is not { } box || MediaEncoding.IsWholeFrame(box, video) || MediaEncoding.IsTooSmall(box, video))
+            throw new ConversionRefusedException("error.no_black_bars");
+        return MediaEncoding.CropFilter(video, box);
     }
 
     /// <remarks>
@@ -332,7 +354,7 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         if (media.Slideshow)
         {
             var slides = await PrepareSlidesAsync(ffmpeg, inputPaths, scratch, progress, cancellationToken);
-            var encoder = MediaEncoding.VideoEncoder("mp4", "libx264", media.VideoCodec, EncodersOf(ffmpeg));
+            var encoder = MediaEncoding.VideoEncoder("mp4", "libx264", media.VideoCodec, await EncodersOfAsync(ffmpeg));
             args = MediaJoining.Slideshow(slides, outputPath, media, encoder, scratch);
             duration = MediaJoining.SlideshowDuration(slides.Count, media);
             start = 0.2;
@@ -349,7 +371,15 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
             }
             duration = TimeSpan.FromSeconds(clips.Sum(c => c.Info.Duration?.TotalSeconds ?? 0));
             start = 0.05;
-            if (format == "m4a")
+            if (format == "mp4" && MediaJoining.M4sPair(clips) is { } pair)
+            {
+                if (!MediaEncoding.CanCopyVideo("mp4", pair.Video.Info.Video!, media)
+                    || !MediaEncoding.CanCopyAudio("mp4", pair.Audio.Info.Audio!, media))
+                    throw new InvalidOperationException("The selected streams or settings cannot be copied into MP4.");
+                args = MediaJoining.MuxM4sPair(pair.Video, pair.Audio, outputPath);
+                duration = pair.Video.Info.Duration ?? TimeSpan.Zero;
+            }
+            else if (format == "m4a")
             {
                 if (clips.FirstOrDefault(c => c.Info.Audio is null && c.Info.Video is null) is { Path: { } silent })
                     throw new InvalidOperationException($"{Path.GetFileName(silent)} has no sound.");
@@ -363,7 +393,7 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
             }
             else
             {
-                var encoder = MediaEncoding.VideoEncoder("mp4", "libx264", media.VideoCodec, EncodersOf(ffmpeg));
+                var encoder = MediaEncoding.VideoEncoder("mp4", "libx264", media.VideoCodec, await EncodersOfAsync(ffmpeg));
                 args = MediaJoining.EncodeVideos(clips, outputPath, media, encoder, scratch);
             }
         }
@@ -407,6 +437,85 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
             var reason = FfmpegRunner.Summarize(result.StandardError);
             throw new InvalidOperationException($"FFmpeg failed (exit code {result.ExitCode}){(reason.Length > 0 ? ": " + reason : ".")}");
         }
+    }
+
+    /// <summary>
+    /// "Cut a clip": the clip the window made (<see cref="MediaOptions.Clip"/>, kept inside the video). One stretch as
+    /// recorded is copied as it is unless the preset asks for an exact cut (<see cref="MediaOptions.ExactCut"/>); a copy
+    /// the target can't take (a codec its container doesn't hold) is encoded exactly instead, like the preset's other
+    /// videos. Several parts, speeds, volumes, pauses or fades are encoded through one filter graph.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> CutClipAsync(string ffmpeg, string ffprobe, ConversionStep step, string input, MediaInfo info,
+        IProgress<double>? progress, CancellationToken cancellationToken)
+    {
+        if (info.Video is null)
+            throw new InvalidOperationException("The file has no video stream.");
+        var media = step.Preset.Media;
+        var edit = media.Clip!.Clamped(info.Duration?.TotalSeconds);
+        var output = step.Output.Allocate(FormatRegistry.Get(step.To).PrimaryExtension);
+        if (output is null)
+            return [];
+        var duration = TimeSpan.FromSeconds(edit.Length);
+        if (!edit.IsPlainCut)
+        {
+            // Parts, speeds, volumes, pauses or fades: one filter graph, always encoded.
+            try
+            {
+                var musicTrack = edit.Music is { } song && !media.RemoveAudio
+                    ? await MediaInfo.AudioTrackAsync(ffprobe, Path.GetFullPath(song.Path), cancellationToken) : 0;
+                var pass = new FfmpegPass(MediaEncoding.ClipEditArguments(input, output, step.To, edit, media, info,
+                    await EncodersOfAsync(ffmpeg), musicTrack), 1);
+                await RunPassesAsync(ffmpeg, [pass], output, duration, progress, cancellationToken);
+            }
+            catch
+            {
+                TryDelete(output);
+                throw;
+            }
+            progress?.Report(1);
+            return [output];
+        }
+
+        var clip = new ClipRange(edit.Parts[0].Start, edit.Parts[0].End);
+        try
+        {
+            if (!media.ExactCut)
+            {
+                try
+                {
+                    var copy = new FfmpegPass(MediaEncoding.ClipCopy(input, output, step.To, clip, media, info), 1);
+                    await RunPassesAsync(ffmpeg, [copy], output, duration, progress, cancellationToken);
+                    progress?.Report(1);
+                    return [output];
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning("{File}: copying the clip failed ({Reason}); encoding it instead", input, ex.Message);
+                    TryDelete(output);
+                }
+            }
+
+            var encoders = await EncodersOfAsync(ffmpeg);
+            HardwareEncoder? hardware = null;
+            if (MediaEncoding.HardwareCodec(step.To, media, info, encode: true) is { } codec)
+            {
+                var tenBit = HardwareVideo.TenBit(codec, info.Video);
+                hardware = SelectHardware is { } select
+                    ? await select(ffmpeg, codec, tenBit, encoders, cancellationToken)
+                    : await HardwareProbe.SelectAsync(ffmpeg, codec, tenBit, encoders, _logger, cancellationToken);
+            }
+            IReadOnlyList<FfmpegPass> Plan(HardwareEncoder? encoder) =>
+                MediaEncoding.Plan(input, output, step.To, media, info, step.WorkDirectory, encoders: encoders, hardware: encoder, clip: clip);
+            await RunWithFallbackAsync(Plan(hardware), hardware, Plan,
+                planned => RunPassesAsync(ffmpeg, planned, output, duration, progress, cancellationToken), output, _logger, cancellationToken);
+        }
+        catch
+        {
+            TryDelete(output);
+            throw;
+        }
+        progress?.Report(1);
+        return [output];
     }
 
     /// <summary>
@@ -553,25 +662,58 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
     [GeneratedRegex(@"version\s+n?(\d+(?:\.\d+)+|\S+)")]
     private static partial Regex VersionPattern();
 
-    private static readonly ConcurrentDictionary<string, IReadOnlySet<string>?> Encoders = new();
+    private static readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlySet<string>?>>> Encoders = new();
 
     /// <summary>
     /// The encoders of <paramref name="ffmpeg"/> (<c>ffmpeg -encoders</c>), cached per executable: a copy the user
     /// picked may lack x265 or SVT-AV1. Null (assume Filee's build) when the list can't be read.
+    /// Queried once at a time and kept when read; asked again after a failure.
     /// </summary>
-    internal static IReadOnlySet<string>? EncodersOf(string ffmpeg, TimeSpan? timeout = null) =>
-        Encoders.GetOrAdd($"{ffmpeg}|{File.GetLastWriteTimeUtc(ffmpeg).Ticks}", _ =>
+    internal static Task<IReadOnlySet<string>?> EncodersOfAsync(string ffmpeg, TimeSpan? timeout = null) =>
+        QueryOnceAsync(Encoders, ffmpeg, "-encoders", timeout, ParseEncoders);
+
+    private static readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlySet<string>?>>> Decoders = new();
+
+    /// <summary>
+    /// The decodable codec names of this ffmpeg, cached per executable. Null assumes every codec can be decoded
+    /// when the table cannot be read.
+    /// Queried once at a time and kept when read; asked again after a failure.
+    /// </summary>
+    internal static Task<IReadOnlySet<string>?> DecodableCodecsOfAsync(string ffmpeg, TimeSpan? timeout = null) =>
+        QueryOnceAsync(Decoders, ffmpeg, "-codecs", timeout, ParseDecodableCodecs);
+
+    private static async Task<IReadOnlySet<string>?> QueryOnceAsync(
+        ConcurrentDictionary<string, Lazy<Task<IReadOnlySet<string>?>>> cache, string ffmpeg, string option,
+        TimeSpan? timeout, Func<string, IReadOnlySet<string>> parse)
+    {
+        var key = $"{ffmpeg}|{File.GetLastWriteTimeUtc(ffmpeg).Ticks}";
+        var entry = cache.GetOrAdd(key, _ => new Lazy<Task<IReadOnlySet<string>?>>(() => Task.Run(Query)));
+        try
+        {
+            var result = await entry.Value.ConfigureAwait(false);
+            if (result is null)
+                cache.TryRemove(KeyValuePair.Create(key, entry));
+            return result;
+        }
+        catch
+        {
+            cache.TryRemove(KeyValuePair.Create(key, entry));
+            throw;
+        }
+
+        IReadOnlySet<string>? Query()
         {
             try
             {
-                var result = FfmpegRunner.RunBriefly(ffmpeg, ["-hide_banner", "-encoders"], timeout ?? QueryTimeout);
-                return result.ExitCode == 0 ? ParseEncoders(result.StandardOutput) : null;
+                var result = FfmpegRunner.RunBriefly(ffmpeg, ["-hide_banner", option], timeout ?? QueryTimeout);
+                return result.ExitCode == 0 ? parse(result.StandardOutput) : null;
             }
             catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
             {
                 return null;
             }
-        });
+        }
+    }
 
     private static readonly ConcurrentDictionary<string, IReadOnlySet<string>?> Filters = new();
 
@@ -608,6 +750,17 @@ public sealed partial class FfmpegConverter(ILogger? logger = null) : IConverter
         list.Split('\n')
             .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             .Where(parts => parts.Length >= 2 && parts[0].Length == 6 && parts[0][0] is 'V' or 'A' or 'S')
+            .Select(parts => parts[1])
+            .ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>The decodable codec names in <c>ffmpeg -codecs</c> output.</summary>
+    internal static IReadOnlySet<string> ParseDecodableCodecs(string list) =>
+        // " DEA.L. aac  AAC (Advanced Audio Coding) (decoders: aac aac_fixed)"
+        // " ..A.L. apple_apac  Apple Positional Audio Codec"
+        list.Split('\n')
+            .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Where(parts => parts.Length >= 2 && parts[0].Length == 6 && parts[0][0] == 'D'
+                && parts[0][2] is 'V' or 'A' or 'S' or 'D' or 'T')
             .Select(parts => parts[1])
             .ToHashSet(StringComparer.Ordinal);
 

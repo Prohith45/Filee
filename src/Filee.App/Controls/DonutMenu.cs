@@ -92,8 +92,9 @@ public sealed partial class DonutMenu : Control
     /// <summary>Gap between slices in pixels (keeps the donut "full" while separating slices).</summary>
     private const double GapPixels = 3;
     private const double PopOut = 7;
-    private const double OpenDuration = 0.42;
-    private const double OpenStagger = 0.028;
+    private const double OpenDuration = 0.30;
+    private const double OpenStagger = 0.012;
+    private double[] _closeFrom = [];
     private const double DragStartDistance = 5;
 
     // Pencil (Material "edit") path in a 24×24 box.
@@ -143,6 +144,11 @@ public sealed partial class DonutMenu : Control
         FlowDirection = FlowDirection.LeftToRight;
         ClipToBounds = false;
         Cursor = new Cursor(StandardCursorType.Hand);
+        // The live click-mode donut handles Tab, arrows, Enter and Escape itself. It must be the focused control
+        // after a context-menu/shortcut launch; otherwise Avalonia has no focused target to which the key events can
+        // be routed. It is focused explicitly by RadialController, so it must not participate in normal Tab order.
+        Focusable = true;
+        IsTabStop = false;
     }
 
     public IReadOnlyList<DonutItem>? Items { get => GetValue(ItemsProperty); set => SetValue(ItemsProperty, value); }
@@ -230,6 +236,7 @@ public sealed partial class DonutMenu : Control
             return;
         }
         Array.Fill(_open, 0);
+        _lastFrame = null;
         _openClock = 0;
         StartAnimation();
     }
@@ -237,11 +244,14 @@ public sealed partial class DonutMenu : Control
     /// <summary>Shrinks the donut back into the centre, then calls <paramref name="done"/>.</summary>
     public void PlayCloseAnimation(Action done)
     {
+        if (IsFlipping)
+            FinishFlip();
         if (!Motion.Enabled || Count == 0)
         {
             done();
             return;
         }
+        _closeFrom = (double[])_open.Clone();
         _closing = true;
         _closeCallback = done;
         _openClock = 0;
@@ -456,8 +466,9 @@ public sealed partial class DonutMenu : Control
             _keyboardHold = false;
         }
         _lastPointer = p;
-
         var hit = HitTest(p);
+        if (IsFlipping)
+            PointAtAngle(DonutGeometry.AngleOf(Center, p), hit.Kind is DonutHitKind.Segment or DonutHitKind.SubSegment);
         TrackGroups(hit, p);
         SetHover(hit.Kind switch
         {
@@ -709,9 +720,10 @@ public sealed partial class DonutMenu : Control
         if (loop != _loop)
             return; // a loop that was given up on as stalled, replaced by a newer one
         _lastTick = Environment.TickCount64;
-        var dt = _lastFrame is { } last ? Math.Clamp((time - last).TotalSeconds, 0, 0.05) : 1 / 60.0;
+        var elapsed = _lastFrame is { } last ? Math.Max(0, (time - last).TotalSeconds) : 0;
+        var dt = Math.Min(elapsed, 0.05);
         _lastFrame = time;
-        var active = Advance(dt);
+        var active = Advance(dt, elapsed);
 
         InvalidateVisual();
         if (active && TopLevel.GetTopLevel(this) is { } top)
@@ -724,7 +736,7 @@ public sealed partial class DonutMenu : Control
     /// Advances every animation by <paramref name="dt"/> seconds. Returns true while more frames are needed.
     /// Internal so tests can step time deterministically.
     /// </summary>
-    internal bool Advance(double dt)
+    internal bool Advance(double dt, double? elapsed = null)
     {
         var active = false;
 
@@ -760,16 +772,20 @@ public sealed partial class DonutMenu : Control
                 _shownExpanded = -1;
             active |= StepProgress(dt);
             active |= StepLayout(dt);
-            active |= StepFlip(dt);
+            active |= StepFlip(elapsed ?? dt);
 
             if (_openClock < double.MaxValue)
             {
-                _openClock += dt;
+                _openClock += elapsed ?? dt;
                 var done = true;
                 for (var i = 0; i < _open.Length; i++)
                 {
-                    var t = Math.Clamp((_openClock - i * (_closing ? 0.01 : OpenStagger)) / (_closing ? 0.16 : OpenDuration), 0, 1);
-                    _open[i] = _closing ? 1 - EaseInCubic(t) : EaseOutBack(t);
+                    // Keep the wave brief even with many slices; a late frame must not stretch its duration.
+                    var delay = _closing ? 0 : Math.Min(i * OpenStagger, 0.072);
+                    var t = Math.Clamp((_openClock - delay) / (_closing ? 0.14 : OpenDuration), 0, 1);
+                    _open[i] = _closing
+                        ? (i < _closeFrom.Length ? _closeFrom[i] : 1) * (1 - EaseInCubic(t))
+                        : EaseOutBack(t);
                     done &= t >= 1;
                 }
                 if (done)
@@ -798,7 +814,7 @@ public sealed partial class DonutMenu : Control
 
     private static double EaseOutBack(double t)
     {
-        const double c1 = 1.55;
+        const double c1 = 0.8;
         const double c3 = c1 + 1;
         return 1 + c3 * Math.Pow(t - 1, 3) + c1 * Math.Pow(t - 1, 2);
     }
@@ -822,19 +838,15 @@ public sealed partial class DonutMenu : Control
             return;
         }
 
-        // A flip turns the ring (and its shadow and a group's ring) about the vertical axis; the hub stays.
-        var flip = FlipTransform(center);
-        using (context.PushTransform(flip))
-            RenderRing(context, center, r1, r2, n, typeface, typefaceRegular);
+        RenderRing(context, center, r1, r2, n, typeface, typefaceRegular);
 
         var reaching = _expanded >= 0 ? _expanded : _pendingGroup;
         if (!IsEditMode && reaching >= 0 && reaching < n && Items![reaching].Children is { Count: > 0 } reachable)
             DrawHitBackdrop(context, center, reaching, reachable.Count);
         if (!IsEditMode && _shownExpanded >= 0 && _shownExpanded < n && _expand.Value > 0.01)
-        {
-            using (context.PushTransform(flip))
-                DrawSubRing(context, center, typeface, typefaceRegular);
-        }
+            DrawSubRing(context, center, typeface, typefaceRegular);
+        if (HasOldGroupRing)
+            DrawOldSubRing(context, center, typeface, typefaceRegular);
 
         DrawCenter(context, center, r1, typeface, typefaceRegular);
 
@@ -857,6 +869,8 @@ public sealed partial class DonutMenu : Control
 
         for (var i = 0; i < n; i++)
         {
+            if (IsFlipping && SliceFlipWidth(false, i) == 0)
+                continue;
             var item = Items![i];
             var open = i < _open.Length ? _open[i] : 1;
             if (open <= 0.001)
@@ -871,13 +885,14 @@ public sealed partial class DonutMenu : Control
             var offset = DonutGeometry.PointAt(new Point(0, 0), hover * PopOut, mid);
 
             // Open animation: scale up from the centre with a small twist.
-            var scale = 0.55 + 0.45 * open;
-            var rotate = (1 - Math.Min(open, 1)) * -0.35;
+            var scale = 0.78 + 0.22 * open;
+            var rotate = (1 - Math.Min(open, 1)) * -0.12;
             var transform =
                 Matrix.CreateTranslation(-center.X, -center.Y) *
                 Matrix.CreateRotation(rotate) *
                 Matrix.CreateScale(scale * (1 + hover * 0.025), scale * (1 + hover * 0.025)) *
-                Matrix.CreateTranslation(center.X + offset.X, center.Y + offset.Y);
+                Matrix.CreateTranslation(center.X + offset.X, center.Y + offset.Y) *
+                SliceFlipTransform(false, i);
 
             using (context.PushTransform(transform))
             using (context.PushOpacity(Math.Clamp(open, 0, 1) * (i == _dimmedIndex ? 0.3 : 1)))
@@ -895,6 +910,32 @@ public sealed partial class DonutMenu : Control
                     r2 - r1 - 16, typeface, typefaceRegular, hot);
             }
         }
+
+        if (_oldFace is { } old)
+            for (var i = 0; i < old.Length; i++)
+            {
+                var slice = old[i];
+                if (SliceFlipWidth(true, i) == 0 || slice.Open <= 0.001)
+                    continue;
+                var offset = DonutGeometry.PointAt(new Point(0, 0), slice.Hover * PopOut, slice.Mid);
+                var scale = 0.78 + 0.22 * slice.Open;
+                var rotate = (1 - Math.Min(slice.Open, 1)) * -0.12;
+                var transform = Matrix.CreateTranslation(-center.X, -center.Y) * Matrix.CreateRotation(rotate) *
+                                Matrix.CreateScale(scale * (1 + slice.Hover * 0.025), scale * (1 + slice.Hover * 0.025)) *
+                                Matrix.CreateTranslation(center.X + offset.X, center.Y + offset.Y) *
+                                SliceFlipTransform(true, i);
+                using (context.PushTransform(transform))
+                using (context.PushOpacity(Math.Clamp(slice.Open, 0, 1) * (slice.Dimmed ? 0.3 : 1)))
+                {
+                    var wedge = CreateWedge(center, r1, r2, slice.Mid, slice.Span);
+                    context.DrawGeometry(WithOpacity(SliceBrush, SliceOpacity * (slice.Item.IsEnabled ? 1 : 0.55)), BorderPen(), wedge);
+                    if (slice.Emphasis > 0.01 && slice.Item.IsEnabled)
+                        context.DrawGeometry(WithOpacity(AccentBrush, 0.82 * Math.Clamp(slice.Emphasis, 0, 1)), null, wedge);
+                    DrawLabel(context, slice.Item, center, (r1 + r2) / 2, slice.Mid,
+                        slice.Span * (r1 + r2) / 2 - 10, r2 - r1 - 16, typeface, typefaceRegular,
+                        slice.Hot && slice.Item.IsEnabled);
+                }
+            }
 
         if (IsEditMode && _previewSpan.Value > 0.01)
             DrawPreview(context, center, r1, r2, typeface, typefaceRegular);
@@ -915,7 +956,7 @@ public sealed partial class DonutMenu : Control
             },
         };
         var opening = _open.Length == 0 ? 1 : Math.Clamp(_open.Average(), 0, 1);
-        using (context.PushOpacity(opening))
+        using (context.PushOpacity(opening * ShadowCoverage))
             context.DrawEllipse(brush, null, new Point(center.X, center.Y + 4), shadowRadius, shadowRadius);
     }
 
@@ -929,13 +970,14 @@ public sealed partial class DonutMenu : Control
             context.DrawEllipse(WithOpacity(DangerBrush, 0.18), null, center, radius, radius);
 
         var maxWidth = radius * 1.6;
-        var title = MakeText(CenterTitle ?? "", bold, 14, Foreground, maxWidth, maxLines: 2);
-        var subtitle = MakeText(CenterSubtitle ?? "", regular, 11.5, cancelHot ? DangerBrush : SecondaryForeground, maxWidth, maxLines: 2);
-        // "Tab ↻ back" and "R ↻ tools": small, under the rest, a little narrower (the hub is round).
-        var hint = string.IsNullOrEmpty(CenterHint) ? null : MakeText(CenterHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85);
-        var toolsHint = string.IsNullOrEmpty(ToolsHint) ? null : MakeText(ToolsHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85);
+        var title = CachedText(CenterTitle ?? "", bold, 14, Foreground, maxWidth, maxLines: 2);
+        var subtitle = CachedText(CenterSubtitle ?? "", regular, 11.5, cancelHot ? DangerBrush : SecondaryForeground, maxWidth, maxLines: 2);
+        // "⟳ Tab back": small, under the rest, a little narrower (the hub is round), with room for its icons.
+        var hintIcons = FlipArrowSize + (CenterHintWheel ? MouseWidth + MouseGap : 0) + IconGap;
+        var hint = string.IsNullOrEmpty(CenterHint) ? null : CachedText(CenterHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85 - hintIcons);
+        var toolsHint = string.IsNullOrEmpty(ToolsHint) ? null : CachedText(ToolsHint, regular, 10.5, SecondaryForeground, maxWidth * 0.85);
         var total = title.Height + (string.IsNullOrEmpty(CenterSubtitle) ? 0 : subtitle.Height + 2)
-            + (hint is null ? 0 : hint.Height + 4)
+            + (hint is null ? 0 : hint.Height + 5)
             + (toolsHint is null ? 0 : toolsHint.Height + 3);
         var y = center.Y - total / 2;
         DrawCentered(context, title, center.X, y);
@@ -949,18 +991,25 @@ public sealed partial class DonutMenu : Control
         {
             using (context.PushOpacity(0.85))
             {
-                if (!CenterHintWheel)
+                // The flip arrow is drawn, not typed: a font without "↻" showed a box in its place (#554). A small mouse
+                // comes first when the wheel flips and no key does. The icons stand at the start of the line: on its
+                // left, or on its right in a right-to-left language, in reading order there too.
+                var left = center.X - (hintIcons + hint.Width) / 2;
+                var rtl = TextDirection == FlowDirection.RightToLeft;
+                var textLeft = rtl ? left : left + hintIcons;
+                var middle = y + 5 + hint.Height / 2;
+                var x = rtl ? left + hint.Width + IconGap : left;
+                var arrowFirst = rtl && CenterHintWheel;
+                if (CenterHintWheel && !arrowFirst)
                 {
-                    DrawCentered(context, hint, center.X, y + 4);
+                    DrawMouse(context, new Rect(x, middle - 5, MouseWidth, 10), SecondaryForeground);
+                    x += MouseWidth + MouseGap;
                 }
-                else
-                {
-                    // A small mouse in front: "🖱 ↻ back" when the wheel flips and no key does.
-                    const double iconWidth = 7, gap = 4;
-                    var left = center.X - (hint.Width + iconWidth + gap) / 2;
-                    DrawMouse(context, new Rect(left, y + 4 + (hint.Height - 10) / 2, iconWidth, 10), SecondaryForeground);
-                    DrawCentered(context, hint, center.X + (iconWidth + gap) / 2, y + 4);
-                }
+                DrawFlipArrow(context, new Point(x + FlipArrowSize / 2, middle), FlipArrowSize / 2, SecondaryForeground);
+                x += FlipArrowSize + (arrowFirst ? MouseGap : IconGap);
+                if (arrowFirst)
+                    DrawMouse(context, new Rect(x, middle - 5, MouseWidth, 10), SecondaryForeground);
+                DrawCentered(context, hint, textLeft + hint.Width / 2, y + 5);
             }
             y += hint.Height + 4;
         }
@@ -971,6 +1020,50 @@ public sealed partial class DonutMenu : Control
                 DrawCentered(context, toolsHint, center.X, y + 3);
             }
         }
+    }
+
+    // The hub hint's icons: the flip arrow, the mouse (wheel only) and the room between them and before the text. The
+    // arrow's head reaches a little past its circle towards the mouse, so that gap is wider.
+    private const double FlipArrowSize = 10, MouseWidth = 7, IconGap = 4, MouseGap = 6;
+
+    /// <summary>
+    /// A small arrow turning clockwise round <paramref name="center"/>, the "flip" in the hub hint: three quarters of a
+    /// circle with a solid head at its end.
+    /// </summary>
+    internal static void DrawFlipArrow(DrawingContext context, Point center, double radius, IBrush? brush)
+    {
+        var pen = new Pen(brush, 1.2, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round);
+        // Angles in radians from 3 o'clock, growing clockwise on screen (y points down). From half past one round to half
+        // past ten, leaving a quarter of the circle open at the top for the head to point into. A narrower gap let the
+        // head run into the start of the arc.
+        const double start = -Math.PI / 4, sweep = Math.PI * 3 / 2;
+        Point At(double angle) => new(center.X + radius * Math.Cos(angle), center.Y + radius * Math.Sin(angle));
+        var endAngle = start + sweep;
+        var arc = new StreamGeometry();
+        using (var g = arc.Open())
+        {
+            g.BeginFigure(At(start), false);
+            g.ArcTo(At(endAngle), new Size(radius, radius), 0, sweep > Math.PI, SweepDirection.Clockwise);
+            g.EndFigure(false);
+        }
+        context.DrawGeometry(null, pen, arc);
+
+        // The head: a small solid triangle. Its base crosses the end of the arc and its point goes on along the circle's
+        // tangent there, into the gap. Two thin strokes ran almost parallel to the ring at this size and blurred into it.
+        var end = At(endAngle);
+        var along = new Vector(-Math.Sin(endAngle), Math.Cos(endAngle)); // clockwise
+        var outward = new Vector(Math.Cos(endAngle), Math.Sin(endAngle));
+        var length = radius * 0.72;
+        var halfWidth = radius * 0.5;
+        var head = new StreamGeometry();
+        using (var g = head.Open())
+        {
+            g.BeginFigure(end + along * length, true);
+            g.LineTo(end + outward * halfWidth);
+            g.LineTo(end - outward * halfWidth);
+            g.EndFigure(true);
+        }
+        context.DrawGeometry(brush, new Pen(brush, 0.7, lineJoin: PenLineJoin.Round), head);
     }
 
     /// <summary>An outline of a mouse with its wheel, filling <paramref name="box"/>.</summary>
@@ -987,12 +1080,13 @@ public sealed partial class DonutMenu : Control
         var foreground = hot ? OnAccentBrush : item.IsEnabled ? Foreground : SecondaryForeground;
         var width = Math.Clamp(maxWidth, 30, 120);
         var text = KeepKoreanWords(item.Label);
-        var label = MakeText(text, bold, LabelSize(text, bold, width), foreground, width, maxLines: 2);
+        var label = CachedText(text, bold, LabelSize(text, bold, width), foreground, width, maxLines: 2);
         var showCaption = !string.IsNullOrEmpty(item.Caption) &&
                           !string.Equals(item.Caption, item.Label, StringComparison.OrdinalIgnoreCase) &&
                           label.Height + 14 < maxHeight;
         var caption = showCaption
-            ? MakeCaption(item.Caption!, regular, hot ? OnAccentBrush : SecondaryForeground, width, label.Height, maxHeight)
+            ? CachedText(item.Caption!, regular, 10.5, hot ? OnAccentBrush : SecondaryForeground, width,
+                maxLines: label.Height + 28 < maxHeight ? 2 : 1)
             : null;
 
         var total = label.Height + (caption?.Height ?? 0);
@@ -1088,6 +1182,18 @@ public sealed partial class DonutMenu : Control
         context.DrawText(text, new Point(centerX - text.MaxTextWidth / 2, top));
 
     private Pen? BorderPen() => SliceBorderBrush is null ? null : new Pen(SliceBorderBrush, 1);
+
+    // Text shaping is much more expensive than the slice transforms. Keep layouts across frames,
+    // with all layout/paint inputs in the key so language, theme and hover changes remain correct.
+    private readonly Dictionary<(string Text, Typeface Typeface, double Size, IBrush? Brush, double Width, int Lines, string Culture), FormattedText> _textLayouts = new();
+
+    private FormattedText CachedText(string text, Typeface typeface, double size, IBrush? brush, double maxWidth, int maxLines = 1)
+    {
+        var key = (text, typeface, size, brush, maxWidth, maxLines, CultureInfo.CurrentUICulture.Name);
+        if (_textLayouts.TryGetValue(key, out var layout)) return layout;
+        if (_textLayouts.Count >= 512) _textLayouts.Clear();
+        return _textLayouts[key] = MakeText(text, typeface, size, brush, maxWidth, maxLines);
+    }
 
     private static FormattedText MakeText(string text, Typeface typeface, double size, IBrush? brush, double maxWidth, int maxLines = 1) =>
         new(text, CultureInfo.CurrentUICulture, TextDirection, typeface, size, brush)

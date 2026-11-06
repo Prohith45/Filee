@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Filee.App.Services;
+using Filee.Core.Formats;
 using Filee.Core.Localization;
 using Filee.Core.Presets;
 using Filee.Core.Settings;
@@ -43,10 +44,13 @@ public sealed partial class PresetsPageViewModel : ObservableObject, IFitsWindow
         _loc = loc;
         _windows = windows;
         VisiblePresets = new FilteredList<PresetListItem>(Presets, p => [p.Name, p.Target, p.Preset.TargetFormat]);
+        var off = store.Settings.TurnedOffFieldSet();
         // Groups, tools and prompts convert nothing directly: they live on the donut only (Settings → Toolbar).
-        foreach (var preset in store.Presets.Where(p => !p.IsGroup && !p.IsTool && !p.IsPrompt))
+        foreach (var preset in store.Presets.Where(p => !p.IsGroup && !p.IsTool && !p.IsPrompt && FormatFields.IsShown(p.TargetFormat, off)))
             Presets.Add(new PresetListItem(preset, loc));
         SelectedPreset = Presets.FirstOrDefault();
+        PlacePresets = [.. BuiltInData.PlacePresets().Where(p => FormatFields.IsShown(p.TargetFormat, off))
+            .Select(p => new PresetListItem(p, loc))];
     }
 
     public ObservableCollection<PresetListItem> Presets { get; } = [];
@@ -64,7 +68,7 @@ public sealed partial class PresetsPageViewModel : ObservableObject, IFitsWindow
 
     partial void OnSelectedPresetChanged(PresetListItem? value)
     {
-        Editor = value is null ? null : new PresetEditorViewModel(value.Preset, _loc);
+        Editor = value is null ? null : new PresetEditorViewModel(value.Preset, _loc, _store.Settings.TurnedOffFieldSet());
         SavedMessage = null;
     }
 
@@ -83,6 +87,18 @@ public sealed partial class PresetsPageViewModel : ObservableObject, IFitsWindow
 
     [RelayCommand]
     private void Add() => AddPreset(new Preset { Name = _loc["toolbar.new_preset"], TargetFormat = "png" });
+
+    /// <summary>The ready-made presets Add offers besides an empty one (<see cref="BuiltInData.PlacePresets"/>).</summary>
+    public IReadOnlyList<PresetListItem> PlacePresets { get; }
+
+    /// <summary>Adds a copy of a ready-made preset under a new id, so it can be added again and changed freely.</summary>
+    [RelayCommand]
+    private void AddPlace(Preset template)
+    {
+        var copy = template.Clone();
+        copy.Id = Preset.NewId();
+        AddPreset(copy);
+    }
 
     [RelayCommand]
     private void Duplicate()

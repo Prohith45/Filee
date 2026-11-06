@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Filee.Core.Conversion;
 
 /// <summary>Background queue that executes <see cref="ConversionJob"/>s one after another.</summary>
-public sealed class JobQueue : IAsyncDisposable
+public sealed partial class JobQueue : IAsyncDisposable
 {
     private readonly ConverterCatalog _catalog;
     private readonly IPdfMerger? _pdfMerger;
@@ -29,6 +29,7 @@ public sealed class JobQueue : IAsyncDisposable
     /// <summary>Output folders this queue made (a subfolder, a fixed folder that wasn't there): removed again when left empty.</summary>
     private readonly HashSet<string> _madeFolders = new(Platform.FileSystemPaths.Comparer);
     private readonly Task _worker;
+    private readonly Func<string, Platform.TrashRefusal?>? _moveToTrash;
     private int _busy;
 
     /// <param name="catalog">Converters and their priority.</param>
@@ -37,9 +38,14 @@ public sealed class JobQueue : IAsyncDisposable
     /// <param name="combiner">Used by "Compress into one archive" presets (<see cref="ArchiveOptions.CombineIntoOne"/>).</param>
     /// <param name="tiffMerger">Used by multi-page TIFF presets (<see cref="ImageOptions.MultiPageTiff"/>).</param>
     /// <param name="mediaJoiner">Used by "Merge videos", "Merge audio" and "Video from images" (<see cref="Preset.JoinsIntoOneMedia"/>).</param>
+    /// <param name="moveToTrash">
+    /// Moves a file to the Recycle Bin / Trash for <see cref="OutputRule.ReplaceOriginal"/>: null when it worked, else
+    /// why not. Without it originals are always kept.
+    /// </param>
     public JobQueue(ConverterCatalog catalog, IPdfMerger? pdfMerger = null, ILogger<JobQueue>? log = null, IFileCombiner? combiner = null,
-        ITiffMerger? tiffMerger = null, IMediaJoiner? mediaJoiner = null)
+        ITiffMerger? tiffMerger = null, IMediaJoiner? mediaJoiner = null, Func<string, Platform.TrashRefusal?>? moveToTrash = null)
     {
+        _moveToTrash = moveToTrash;
         _catalog = catalog;
         _pdfMerger = pdfMerger;
         _combiner = combiner;
@@ -109,32 +115,41 @@ public sealed class JobQueue : IAsyncDisposable
             if (job.Fetcher is { } fetcher)
                 await FetchSourcesAsync(job, fetcher);
 
-            var planner = _catalog.CreatePlanner();
-            var merge = job.Preset.Pdf.MergeIntoSingle
-                        && job.Preset.TargetFormat == "pdf"
-                        && job.Files.Count > 1
-                        && _pdfMerger is not null;
-            // Any files, one of them or many, archives or not: they go into the archive as they are.
-            var combine = job.Preset.PacksIntoOneArchive && _combiner is not null;
-
-            // One file is enough: a 10-page PDF becomes one 10-page TIFF.
-            var multiPageTiff = job.Preset.Image.MultiPageTiff && job.Preset.TargetFormat == "tiff" && _tiffMerger is not null;
-            // Clips back to back, or pictures one after the other, in the order they were dropped.
-            var join = job.Preset.JoinsIntoOneMedia && _mediaJoiner is not null;
-
-            if (join)
-                await RunJoinedMediaAsync(job, planner, workDir);
-            else if (merge)
-                await RunMergedAsync(job, planner, workDir);
-            else if (multiPageTiff)
-                await RunMultiPageTiffAsync(job, planner, workDir);
-            else if (combine)
-                await RunCombinedAsync(job, workDir);
+            if (job.Preset.IsCopyToFolder)
+                await RunCopiesAsync(job);
             else
-                await Parallel.ForEachAsync(
-                    job.Files.Select((f, i) => (File: f, Index: i + 1)),
-                    new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = CancellationToken.None },
-                    async (item, _) => await RunFileAsync(job, item.File, item.Index, planner, workDir, finalOutput: true));
+            {
+                var planner = _catalog.CreatePlanner();
+                var merge = job.Preset.Pdf.MergeIntoSingle
+                            && job.Preset.TargetFormat == "pdf"
+                            && job.Files.Count > 1
+                            && _pdfMerger is not null;
+                // Any files, one of them or many, archives or not: they go into the archive as they are.
+                var combine = job.Preset.PacksIntoOneArchive && _combiner is not null;
+
+                // One file is enough: a 10-page PDF becomes one 10-page TIFF.
+                var multiPageTiff = job.Preset.Image.MultiPageTiff && job.Preset.TargetFormat == "tiff" && _tiffMerger is not null;
+                // Clips back to back, or pictures one after the other, in the order they were dropped.
+                var join = job.Preset.JoinsIntoOneMedia && _mediaJoiner is not null;
+                // Pictures one under another or side by side, in the order they were dropped.
+                var imageJoiner = job.Preset.JoinsImages ? _catalog.All.OfType<IImageJoiner>().FirstOrDefault() : null;
+
+                if (join)
+                    await RunJoinedMediaAsync(job, planner, workDir);
+                else if (imageJoiner is not null)
+                    await RunMergedImagesAsync(job, planner, workDir, imageJoiner);
+                else if (merge)
+                    await RunMergedAsync(job, planner, workDir);
+                else if (multiPageTiff)
+                    await RunMultiPageTiffAsync(job, planner, workDir);
+                else if (combine)
+                    await RunCombinedAsync(job, workDir);
+                else
+                    await Parallel.ForEachAsync(
+                        job.Files.Select((f, i) => (File: f, Index: i + 1)),
+                        new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = CancellationToken.None },
+                        async (item, _) => await RunFileAsync(job, item.File, item.Index, planner, workDir, finalOutput: true));
+            }
 
             job.State = job.CancellationToken.IsCancellationRequested ? JobState.Cancelled
                 : job.Files.All(f => f.State is FileState.Done or FileState.Skipped) ? JobState.Completed
@@ -246,6 +261,18 @@ public sealed class JobQueue : IAsyncDisposable
         }
     }
 
+    /// <summary>Applies the preset's PDF finishing (<see cref="PdfOptions.FinishesPdf"/>) to the PDFs among <paramref name="outputs"/>.</summary>
+    private async Task FinishPdfsAsync(Preset preset, IReadOnlyList<string> outputs, CancellationToken ct)
+    {
+        // A retry from history whose preset (and so its password) is gone: no PDF without the password it was meant to have.
+        if (preset.Pdf.PasswordLeftOut && preset.Pdf.Password.Length == 0)
+            throw new ConversionRefusedException("error.pdf_password_gone");
+        if (!preset.Pdf.FinishesPdf || _catalog.All.OfType<IPdfFinisher>().FirstOrDefault() is not { } finisher)
+            return;
+        foreach (var pdf in outputs.Where(o => FormatRegistry.Detect(o)?.Id == "pdf"))
+            await finisher.FinishAsync(pdf, preset.Pdf, ct);
+    }
+
     /// <summary>Converts every file to PDF in the work directory, then merges them into one output.</summary>
     private async Task RunMergedAsync(ConversionJob job, RoutePlanner planner, string workDir)
     {
@@ -257,11 +284,12 @@ public sealed class JobQueue : IAsyncDisposable
                 var file = job.Files[i];
                 if (Stopped(file))
                     return;
-                // An empty PDF goes the long way, where it fails as empty instead of breaking the whole merge.
-                if (FormatRegistry.Detect(file.SourcePath)?.Id == "pdf" && !IsEmptyFile(file.SourcePath))
+                // An empty PDF goes the long way, where it fails as empty instead of breaking the whole merge; so does
+                // one whose text is recognized first.
+                if (FormatRegistry.Detect(file.SourcePath)?.Id == "pdf" && !IsEmptyFile(file.SourcePath) && !job.Preset.RecognizesTextOf("pdf"))
                 {
-                    // Already a PDF, merged as it is: its pages can't be turned (only images going into it can).
-                    if (job.Preset.Image.TurnsOrMirrors)
+                    // Already a PDF, merged as it is: its pages can't be turned or covered (only images going into it can).
+                    if (job.Preset.Image.ReworksPixels)
                         FailUnturned(job, file, "pdf → pdf");
                     else
                         parts[i] = file.SourcePath;
@@ -287,6 +315,8 @@ public sealed class JobQueue : IAsyncDisposable
         try
         {
             await _pdfMerger!.MergeAsync(inputs, output, job.CancellationToken);
+            // Once for the merged PDF, so its pages are numbered through.
+            await FinishPdfsAsync(job.Preset, [output], job.CancellationToken);
         }
         catch
         {
@@ -316,8 +346,8 @@ public sealed class JobQueue : IAsyncDisposable
                 var file = job.Files[i];
                 if (Stopped(file))
                     return;
-                // A TIFF joins as it is, unless it is to be turned: then it goes through the engine like the rest.
-                parts[i] = FormatRegistry.Detect(file.SourcePath)?.Id == "tiff" && !job.Preset.Image.TurnsOrMirrors
+                // A TIFF joins as it is, unless it is to be turned or covered: then it goes through the engine like the rest.
+                parts[i] = FormatRegistry.Detect(file.SourcePath)?.Id == "tiff" && !job.Preset.Image.ReworksPixels
                            && !IsEmptyFile(file.SourcePath)
                     ? [file.SourcePath]
                     : await RunFileAsync(job, file, i + 1, planner, workDir, finalOutput: false, intermediate: "tiff");
@@ -345,6 +375,9 @@ public sealed class JobQueue : IAsyncDisposable
             allocator.Discard();
             throw;
         }
+        // Not checked against the maximum (as before), but a picture under the minimum gets its notice (#662).
+        if (SizeLimit.IsUnderMinimum(job.Preset, [output]))
+            first.UnderMinimumSize = true;
         first.Outputs.Add(output);
         foreach (var f in job.Files.Where(f => f.State != FileState.Failed))
         {
@@ -354,8 +387,11 @@ public sealed class JobQueue : IAsyncDisposable
         Notify(job);
     }
 
-    /// <summary>Share of a slideshow's progress that preparing its pictures takes; encoding the video fills the rest.</summary>
-    private const double SlidesReadyShare = 0.3;
+    /// <summary>
+    /// Share of a slideshow's (or a merge of pictures') progress that preparing its pictures takes; encoding the video
+    /// (or merging) fills the rest.
+    /// </summary>
+    private const double PicturesReadyShare = 0.3;
 
     /// <summary>
     /// "Merge videos" / "Merge audio": the videos or audio files go into one file as they are. "Video from images":
@@ -396,10 +432,10 @@ public sealed class JobQueue : IAsyncDisposable
                 }
                 if (slideshow)
                 {
-                    parts[i] = source.Id == "png" && !job.Preset.Image.TurnsOrMirrors
+                    parts[i] = source.Id == "png" && !job.Preset.Image.ReworksPixels
                         ? [file.SourcePath]
                         : await RunFileAsync(job, file, i + 1, planner, workDir, finalOutput: false, intermediate: "png",
-                            ceiling: SlidesReadyShare);
+                            ceiling: PicturesReadyShare);
                     return;
                 }
                 // A video's sound can join an audio file; a picture or a document joins nothing.
@@ -421,9 +457,73 @@ public sealed class JobQueue : IAsyncDisposable
             return;
         }
 
+        await WriteJoinedAsync(job, joined, inputs.Count, target.PrimaryExtension,
+            (output, progress) => _mediaJoiner!.JoinAsync(inputs, output, target.Id, job.Preset, workDir, progress, job.CancellationToken));
+    }
+
+    /// <summary>
+    /// "Merge images": the pictures go, in order, into one image named after the first, in the first one's format for
+    /// "same as source" (PNG when that one can't be written). A picture the joiner doesn't read as it is (ICNS, JPEG XR,
+    /// SVG, …) becomes a plain PNG in the work directory first; the preset's options apply once, as the pictures merge.
+    /// </summary>
+    private async Task RunMergedImagesAsync(ConversionJob job, RoutePlanner planner, string workDir, IImageJoiner joiner)
+    {
+        var plain = new Preset { TargetFormat = "png", Pdf = { RenderDpi = job.Preset.Pdf.RenderDpi } };
+        var parts = new (string Path, string Format)?[job.Files.Count];
+        await Parallel.ForEachAsync(Enumerable.Range(0, job.Files.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+            async (i, _) =>
+            {
+                var file = job.Files[i];
+                if (Stopped(file))
+                    return;
+                var source = FormatRegistry.Detect(file.SourcePath);
+                if (source is null)
+                    FailFile(job, file, "error.unsupported_source", "." + FormatRegistry.ExtensionOf(file.SourcePath));
+                else if (IsEmptyFile(file.SourcePath))
+                    FailFile(job, file, "error.empty_file", null);
+                else if (source.Category is not (FormatCategory.Image or FormatCategory.Vector))
+                    FailFile(job, file, "error.images_only", null);
+                else if (joiner.CanRead(source.Id))
+                    parts[i] = (file.SourcePath, source.Id);
+                else if (await RunFileAsync(job, file, i + 1, planner, workDir, finalOutput: false, intermediate: "png",
+                             ceiling: PicturesReadyShare, options: plain) is [var png, ..])
+                    parts[i] = (png, "png");
+            });
+
+        var joined = job.Files.Where((f, i) => parts[i] is not null && f.State != FileState.Failed).ToList();
+        var inputs = parts.OfType<(string Path, string Format)>().ToList();
+        if (joined.Count == 0 || job.CancellationToken.IsCancellationRequested)
+        {
+            Notify(job);
+            return;
+        }
+
+        var target = job.Preset.TargetFormat;
+        if (target == BuiltInData.SameAsSource)
+            target = FormatRegistry.Detect(joined[0].SourcePath) is { } first && joiner.CanWrite(first.Id) ? first.Id : "png";
+        else if (!joiner.CanWrite(target))
+        {
+            foreach (var f in joined)
+                FailFile(job, f, "error.no_route", $"{FormatRegistry.Detect(f.SourcePath)?.Id} → {target}");
+            return;
+        }
+
+        await WriteJoinedAsync(job, joined, inputs.Count, FormatRegistry.Get(target).PrimaryExtension,
+            (output, progress) => joiner.JoinAsync(inputs, output, target, job.Preset.Image, progress, job.CancellationToken));
+    }
+
+    /// <summary>
+    /// Writes the one file several sources become (merged videos, merged pictures), named after the first of
+    /// <paramref name="joined"/>. Their progress moves together; a write that fails or is cancelled is undone.
+    /// </summary>
+    /// <param name="write">Writes the file at the path it is given.</param>
+    private async Task WriteJoinedAsync(ConversionJob job, List<FileResult> joined, int inputCount, string extension,
+        Func<string, IProgress<double>, Task> write)
+    {
         var first = joined[0];
         var allocator = CreateFinalAllocator(job, first.SourcePath, 1, oneFile: true);
-        var output = allocator.Allocate(target.PrimaryExtension);
+        var output = allocator.Allocate(extension);
         if (output is null)
         {
             foreach (var f in joined)
@@ -452,7 +552,10 @@ public sealed class JobQueue : IAsyncDisposable
 
         try
         {
-            await _mediaJoiner!.JoinAsync(inputs, output, target.Id, job.Preset, workDir, progress, job.CancellationToken);
+            await write(output, progress);
+            SizeLimit.Check(job.Preset, [output], joined.Select(f => f.SourcePath)); // joined media aren't fitted: one over the limit is refused (#553)
+            if (SizeLimit.IsUnderMinimum(job.Preset, [output]))
+                first.UnderMinimumSize = true;
             first.Outputs.Add(output);
             foreach (var f in joined)
             {
@@ -469,14 +572,14 @@ public sealed class JobQueue : IAsyncDisposable
         catch (ConversionRefusedException ex)
         {
             allocator.Discard();
-            _log.LogInformation("Joining {Count} file(s) into {Output} was refused: {Reason}", inputs.Count, output, ex.Message);
+            _log.LogInformation("Joining {Count} file(s) into {Output} was refused: {Reason}", inputCount, output, ex.Message);
             foreach (var f in joined)
                 FailFile(job, f, ex.ErrorKey, ex.Detail);
         }
         catch (Exception ex)
         {
             allocator.Discard();
-            _log.LogWarning(ex, "Joining {Count} file(s) into {Output} failed", inputs.Count, output);
+            _log.LogWarning(ex, "Joining {Count} file(s) into {Output} failed", inputCount, output);
             foreach (var f in joined)
                 FailFile(job, f, "error.conversion_failed", ex.Message);
         }
@@ -492,11 +595,19 @@ public sealed class JobQueue : IAsyncDisposable
         Notify(job);
     }
 
-    /// <summary>A file that would be used as it is although the preset turns or mirrors it.</summary>
+    /// <summary>
+    /// Why a file the preset turns, mirrors, covers parts of or draws on can't be: no step of its route changes images.
+    /// </summary>
+    private static string CannotReworkKey(ImageOptions image) =>
+        image.HidesAreas ? "error.cannot_hide" : image.HasAnnotations ? "error.images_only" : "error.cannot_turn";
+
+    /// <summary>
+    /// A file that would be used as it is although the preset turns, mirrors, covers parts of or draws on it.
+    /// </summary>
     private void FailUnturned(ConversionJob job, FileResult file, string detail)
     {
         file.State = FileState.Failed;
-        file.ErrorKey = "error.cannot_turn";
+        file.ErrorKey = CannotReworkKey(job.Preset.Image);
         file.ErrorDetail = detail;
         file.Progress = 1;
         Notify(job);
@@ -607,13 +718,25 @@ public sealed class JobQueue : IAsyncDisposable
         }
     }
 
-    /// <summary>Gives the outputs the creation and modification dates of the source (<see cref="OutputRule.KeepDates"/>).</summary>
-    private void CopyDates(string source, IEnumerable<string> outputs)
+    /// <summary>The creation and modification dates of <paramref name="source"/>, or null when they can't be read.</summary>
+    private static (DateTime Created, DateTime Modified)? DatesOf(string source)
     {
         try
         {
-            var created = File.GetCreationTimeUtc(source);
-            var modified = File.GetLastWriteTimeUtc(source);
+            return (File.GetCreationTimeUtc(source), File.GetLastWriteTimeUtc(source));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Gives the outputs the creation and modification dates of the source (<see cref="OutputRule.KeepDates"/>).</summary>
+    private void CopyDates((DateTime Created, DateTime Modified) dates, IEnumerable<string> outputs)
+    {
+        try
+        {
+            var (created, modified) = dates;
             foreach (var output in outputs)
             {
                 if (File.Exists(output))
@@ -631,7 +754,7 @@ public sealed class JobQueue : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // The conversion itself worked: keep the files, only the dates are new.
-            _log.LogWarning(ex, "Could not copy the dates of {Source}", source);
+            _log.LogWarning(ex, "Could not copy the source's dates to {Outputs}", string.Join(", ", outputs));
         }
     }
 
@@ -639,13 +762,15 @@ public sealed class JobQueue : IAsyncDisposable
     /// Converts one source file along its planned route.
     /// With <paramref name="finalOutput"/> false, results stay in the work directory as <paramref name="intermediate"/>
     /// files (PDF for merging, TIFF pages for a multi-page TIFF). <paramref name="ceiling"/> is the file's progress once
-    /// the route is done (a slideshow's pictures leave the rest to the video).
+    /// the route is done (a slideshow's pictures leave the rest to the video). <paramref name="options"/> is the preset
+    /// the route runs with, the job's unless given (the pictures of a merge become plain PNGs first).
     /// </summary>
     private async Task<IReadOnlyList<string>> RunFileAsync(
         ConversionJob job, FileResult file, int index, RoutePlanner planner, string workDir, bool finalOutput,
-        string intermediate = "pdf", double ceiling = 1)
+        string intermediate = "pdf", double ceiling = 1, Preset? options = null)
     {
         var ct = job.CancellationToken;
+        var runWith = options ?? job.Preset;
         if (Stopped(file))
             return [];
         var source = FormatRegistry.Detect(file.SourcePath);
@@ -657,8 +782,8 @@ public sealed class JobQueue : IAsyncDisposable
             return Fail(file, "error.empty_file", null);
 
         var target = !finalOutput ? intermediate
-            : job.Preset.TargetFormat == BuiltInData.SameAsSource ? source.Id
-            : job.Preset.TargetFormat;
+            : runWith.TargetFormat == BuiltInData.SameAsSource ? runWith.CropsVideo ? VideoCrop.TargetFor(source.Id) : source.Id
+            : runWith.TargetFormat;
 
         if (finalOutput && job.Preset.TargetSizeBytes is not null && !TargetSizeSupport.IsSupported(source))
             return Fail(file, "error.size_target_unsupported", source.Id);
@@ -667,12 +792,20 @@ public sealed class JobQueue : IAsyncDisposable
         // video" likewise takes a photo's video, and "Live / Motion Photo" makes one of a video. Never for an
         // intermediate file, and never on the way to another format (video → JPG is otherwise one still frame, photo →
         // MP4 a video of the still picture).
-        var frames = finalOutput && job.Preset.SavesFramesOf(source.Id);
-        var motionPhoto = finalOutput && job.Preset.ExtractsMotionOf(source.Id);
-        var livePhoto = finalOutput && job.Preset.MakesLivePhotoOf(source.Id);
-        var route = planner.Plan(source.Id, target, frames, motionPhoto: motionPhoto, livePhoto: livePhoto);
+        var frames = finalOutput && runWith.SavesFramesOf(source.Id);
+        var motionPhoto = finalOutput && runWith.ExtractsMotionOf(source.Id);
+        var livePhoto = finalOutput && runWith.MakesLivePhotoOf(source.Id);
+        var caption = finalOutput && runWith.CaptionsVideo(source.Id);
+        var translate = finalOutput && runWith.Translate.Enabled;
+        if (translate && !runWith.TranslatesDocument(source.Id))
+            return Fail(file, "error.no_route", $"{source.Id} → {target}", new RouteRequest(source.Id, target, Translate: true));
+        // "Recognize text": Tesseract writes a searchable PDF first, read on into DOCX, TXT, … from there. Also for the
+        // PDFs that are merged into one.
+        var ocr = (finalOutput || target == "pdf") && runWith.RecognizesTextOf(source.Id);
+        var route = planner.Plan(source.Id, target, frames, motionPhoto: motionPhoto, livePhoto: livePhoto, ocr: ocr, caption: caption, translate: translate);
         if (route is null)
-            return Fail(file, "error.no_route", $"{source.Id} → {target}");
+            return Fail(file, "error.no_route", $"{source.Id} → {target}",
+                new RouteRequest(source.Id, target, Frames: frames, MotionPhoto: motionPhoto, LivePhoto: livePhoto, Ocr: ocr, Translate: translate));
 
         // A step that draws text without shaping (rhwp) would break Arabic, Hebrew, Indic or Thai text: such a file
         // takes a route without it (LibreOffice), or is refused with the reason rather than written broken. One
@@ -684,7 +817,7 @@ public sealed class JobQueue : IAsyncDisposable
         {
             _log.LogInformation("{File} has {Script} text, which {Engine} can't draw: planning a route without it",
                 file.SourcePath, script, route.Steps.First(s => s.Unshaped).Converter.DisplayName);
-            route = planner.Plan(source.Id, target, frames, shaping: true);
+            route = planner.Plan(source.Id, target, frames, shaping: true, ocr: ocr);
             if (route is null)
                 return Fail(file, "error.needs_shaping", script);
         }
@@ -701,10 +834,11 @@ public sealed class JobQueue : IAsyncDisposable
 
         // Rotate / flip: only an engine that turns images does it. Without one the file would come out unturned
         // (a PDF or a video re-encoded "as rotated"); with two in the route (EPS → PNG → JPG) it would turn twice.
-        var turnAt = job.Preset.Image.TurnsOrMirrors ? route.FirstTransformStep() : -1;
-        if (job.Preset.Image.TurnsOrMirrors && turnAt < 0)
-            return Fail(file, "error.cannot_turn", $"{source.Id} → {target}");
-        var unturned = turnAt < 0 ? job.Preset : Unturned(job.Preset);
+        // Parts of a picture to hide likewise, once: a route that can't cover them must not write the picture uncovered.
+        var turnAt = runWith.Image.ReworksPixels ? route.FirstTransformStep() : -1;
+        if (runWith.Image.ReworksPixels && turnAt < 0)
+            return Fail(file, CannotReworkKey(runWith.Image), $"{source.Id} → {target}");
+        var unturned = turnAt < 0 ? runWith : Unturned(runWith);
 
         file.State = FileState.Running;
         Notify(job);
@@ -719,7 +853,7 @@ public sealed class JobQueue : IAsyncDisposable
         {
             IReadOnlyList<string> inputs = [file.SourcePath];
             // "Save as ZIP": the last step writes into the work folder and the files are packed into one ZIP afterwards.
-            var zipResult = finalOutput && job.Preset.Output.ZipResult;
+            var zipResult = finalOutput && runWith.Output.ZipResult;
             for (var s = 0; s < route.Steps.Count; s++)
             {
                 var step = route.Steps[s];
@@ -747,13 +881,17 @@ public sealed class JobQueue : IAsyncDisposable
                     await gate.WaitAsync(ct);
                     try
                     {
-                        // Turned once, in step turnAt: every other step gets the preset without rotation and flip,
-                        // also one before it whose engine applies image options but doesn't say it turns.
-                        var preset = s == turnAt ? job.Preset : unturned;
+                        // Turned (and covered) once, in step turnAt: every other step gets the preset without rotation,
+                        // flip and hidden parts, also one before it whose engine applies image options but doesn't say
+                        // it turns.
+                        var preset = s == turnAt ? runWith : unturned;
                         // Playback speed changes once, in the step that writes the output: an animation passed from one
                         // engine to another would otherwise change speed in both.
                         if (preset.Image.ChangesSpeed && !(isLast && finalOutput))
                             preset = AtOriginalSpeed(preset);
+                        // Likewise the size limit: only the result has to fit, not a picture passed to the next engine.
+                        if ((preset.Image.MaxSizeMb > 0 || preset.Image.MinSizeMb > 0 || preset.Media.MaxSizeMb > 0 || preset.Media.MaxSizePercent > 0) && !(isLast && finalOutput))
+                            preset = WithoutSizeLimit(preset);
                         var stepInfo = new ConversionStep(input, step.From, step.To, preset, allocator, workDir, step.FrameSequence,
                             key => file.NoticeKey = key, step.MotionPhoto, step.LivePhoto, fonts =>
                             {
@@ -762,7 +900,7 @@ public sealed class JobQueue : IAsyncDisposable
                                 file.MissingFonts = file.MissingFonts.Concat(fonts)
                                     .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                                 Notify(job);
-                            }, file.SourcePath);
+                            }, file.SourcePath, Caption: step.Caption, Translate: step.Translate);
                         outputs.AddRange(await step.Converter.ConvertAsync(stepInfo, progress, ct));
                     }
                     finally
@@ -774,8 +912,20 @@ public sealed class JobQueue : IAsyncDisposable
             }
 
             // Under "Save as ZIP" the output is still in the work folder: the source copied over it goes into the ZIP.
-            if (finalOutput && job.Preset.Output.OnlyIfSmaller && inputs.Count == 1 && CopyIfNotSmaller(file.SourcePath, inputs[0]))
+            // Never with hidden parts: the source copied over the result would show them again.
+            var copiedSource = finalOutput && runWith.Output.OnlyIfSmaller && !runWith.Image.HidesAreas && inputs.Count == 1
+                && CopyIfNotSmaller(file.SourcePath, inputs[0]);
+            if (copiedSource)
                 file.NoticeKey = "notice.pdf_not_smaller";
+            // Watermark, page numbers, password: on every PDF this file became, from whichever engine.
+            if (finalOutput && runWith.TargetFormat == "pdf")
+                await FinishPdfsAsync(runWith, inputs, ct);
+            // The size limit (#553): a result the engine couldn't fit (HEIC, a render, an animation) isn't handed over.
+            if (finalOutput)
+                SizeLimit.Check(runWith, inputs, file.SourcePath);
+            // The minimum (#662), on the pictures themselves: after the source was copied over, before they go into a ZIP.
+            if (finalOutput && SizeLimit.IsUnderMinimum(runWith, inputs))
+                file.UnderMinimumSize = true;
 
             if (zipResult && inputs.Count > 0)
                 inputs = PackZip(job, file, index, inputs, ct);
@@ -783,13 +933,18 @@ public sealed class JobQueue : IAsyncDisposable
             else if (finalOutput && inputs.Count == 1 && final is { Handed: 1 })
                 inputs = [NextToSource(job, file, index, inputs[0], final)];
 
+            // The source's dates are read now: "Replace the original" may send it to the Trash below.
+            var dates = finalOutput && runWith.Output.KeepDates ? DatesOf(file.SourcePath) : null;
+            if (finalOutput && !zipResult && inputs.Count == 1)
+                inputs = [ReplaceOriginal(job, file, source.Id, inputs[0], copiedSource)];
+
             // A name the engine took but wrote nothing to is free again.
             final?.Release(except: inputs);
             if (finalOutput)
             {
                 file.Outputs.AddRange(inputs);
-                if (job.Preset.Output.KeepDates)
-                    CopyDates(file.SourcePath, inputs);
+                if (dates is { } kept)
+                    CopyDates(kept, inputs);
             }
             file.State = inputs.Count == 0 && finalOutput ? FileState.Skipped : FileState.Done;
             file.Progress = ceiling;
@@ -821,6 +976,8 @@ public sealed class JobQueue : IAsyncDisposable
             var copy = preset.Clone();
             copy.Image.Rotation = ImageRotation.None;
             copy.Image.Flip = ImageFlip.None;
+            copy.Image.HiddenAreas = null;
+            copy.Image.Annotations = null;
             return copy;
         }
 
@@ -831,11 +988,22 @@ public sealed class JobQueue : IAsyncDisposable
             return copy;
         }
 
-        IReadOnlyList<string> Fail(FileResult f, string key, string? detail)
+        static Preset WithoutSizeLimit(Preset preset)
+        {
+            var copy = preset.Clone();
+            copy.Image.MaxSizeMb = 0;
+            copy.Image.MinSizeMb = 0;
+            copy.Media.MaxSizeMb = 0;
+            copy.Media.MaxSizePercent = 0;
+            return copy;
+        }
+
+        IReadOnlyList<string> Fail(FileResult f, string key, string? detail, RouteRequest? failedRoute = null)
         {
             f.State = FileState.Failed;
             f.ErrorKey = key;
             f.ErrorDetail = detail;
+            f.FailedRoute = failedRoute;
             f.Progress = 1;
             Notify(job);
             return [];
@@ -1001,6 +1169,116 @@ public sealed class JobQueue : IAsyncDisposable
         _reservedOutputs[path] = new Reservation();
         return true;
     }
+
+    /// <summary>
+    /// "Replace the original" (<see cref="OutputRule.ReplaceOriginal"/>): the finished <paramref name="output"/> takes the
+    /// source's place and the source goes to the Recycle Bin / Trash. The path of the result is returned. The result is
+    /// first moved next to the source under a temporary name (a copy when it was saved on another drive), so a failure
+    /// there leaves the source alone; then the source goes to the Trash; then the result is renamed within the folder.
+    /// Anything that stops it keeps the source, with a note saying why.
+    /// </summary>
+    /// <param name="copiedSource">"Only if smaller" copied the source as the result: nothing changed, so the source stays
+    /// where it is and the copy goes.</param>
+    private string ReplaceOriginal(ConversionJob job, FileResult file, string sourceFormat, string output, bool copiedSource)
+    {
+        var source = file.SourcePath;
+        if (!job.Preset.Output.ReplaceOriginal || job.Fetcher is not null || !File.Exists(output)
+            || FormatRegistry.Detect(output) is not { } format || format.Id != sourceFormat
+            || string.Equals(Path.GetFullPath(output), Path.GetFullPath(source), Platform.FileSystemPaths.Comparison))
+            return output;
+        // One format can cover different kinds of file (TXT: .bat, .py, .log; PPT: .pot; AIFF: .aifc), and the result
+        // takes the original's name: only the same extension, or another spelling of it (.jpeg / .jpg), replaces.
+        if (!SameKindOfFile(Path.GetExtension(output), Path.GetExtension(source)))
+            return output;
+        if (copiedSource)
+        {
+            try
+            {
+                File.Delete(output);
+                file.NoticeKey = "notice.original_unchanged";
+                return source;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return output;
+            }
+        }
+        if (_moveToTrash is null)
+            return Kept(new Platform.TrashRefusal("trash.no_recycle_bin"), output);
+
+        var staged = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(source))!,
+            $".{Path.GetFileName(source)}.{Guid.NewGuid().ToString("N")[..8]}.filee-tmp");
+        try
+        {
+            File.Move(output, staged);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogWarning(ex, "Could not move {Output} next to {Source}", output, source);
+            return Kept(new Platform.TrashRefusal("trash.cannot_place", ex.Message), output);
+        }
+
+        var refusal = _moveToTrash(source);
+        file.OriginalInTrash = refusal is null;
+        if (refusal is not null)
+        {
+            // The result goes back to where it was saved.
+            try
+            {
+                File.Move(staged, output);
+                return Kept(refusal, output);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.LogWarning(ex, "Could not move {Staged} back to {Output}", staged, output);
+                return Kept(refusal, staged);
+            }
+        }
+        try
+        {
+            File.Move(staged, source);
+            return source;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The original is in the Trash already: the result goes back to the name it was saved under.
+            _log.LogWarning(ex, "Could not rename {Staged} to {Source}", staged, source);
+            file.NoticeKey = "notice.original_in_trash";
+            file.NoticeReasonKey = "trash.cannot_place";
+            file.NoticeDetail = ex.Message;
+            try
+            {
+                File.Move(staged, output);
+                return output;
+            }
+            catch (Exception again) when (again is IOException or UnauthorizedAccessException)
+            {
+                _log.LogWarning(again, "Could not move {Staged} back to {Output}", staged, output);
+                return staged;
+            }
+        }
+
+        string Kept(Platform.TrashRefusal why, string result)
+        {
+            _log.LogInformation("Kept the original {Source}: {Reason} {Detail}", source, why.ReasonKey, why.Detail);
+            file.NoticeKey = "notice.original_kept";
+            file.NoticeReasonKey = why.ReasonKey;
+            file.NoticeDetail = why.Detail;
+            return result;
+        }
+    }
+
+    /// <summary>Extensions that only spell the same kind of file differently ("Replace the original" may swap them).</summary>
+    private static readonly string[][] Spellings =
+    [
+        [".jpg", ".jpeg", ".jpe", ".jfif"], [".tiff", ".tif"], [".html", ".htm"], [".md", ".markdown"], [".yaml", ".yml"],
+        [".mpg", ".mpeg"], [".wav", ".wave"], [".aiff", ".aif"], [".ogg", ".oga"], [".3gp", ".3gpp"], [".m2ts", ".mts"],
+        [".mov", ".qt"], [".tex", ".latex"],
+    ];
+
+    private static bool SameKindOfFile(string a, string b) =>
+        string.Equals(a, b, StringComparison.OrdinalIgnoreCase)
+        || Spellings.Any(s => s.Contains(a, StringComparer.OrdinalIgnoreCase) && s.Contains(b, StringComparer.OrdinalIgnoreCase));
 
     /// <summary>Lets go of <paramref name="path"/> (under the lock): free once nobody holds it.</summary>
     private void Unreserve(string path)

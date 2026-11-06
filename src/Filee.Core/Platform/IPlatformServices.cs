@@ -1,3 +1,5 @@
+using Filee.Core.Settings;
+
 namespace Filee.Core.Platform;
 
 /// <summary>Operating-system specific services.</summary>
@@ -21,8 +23,26 @@ public interface IPlatformServices
     /// <summary>True if the window at the screen point belongs to the file manager or desktop. Coordinates are pixels on Windows/Linux and desktop points on macOS.</summary>
     bool IsFileManagerAt(int x, int y);
 
+    /// <summary>
+    /// Moves a file to the Recycle Bin / Trash, where the user can restore it (<see cref="Presets.OutputRule.ReplaceOriginal"/>),
+    /// and never deletes it for good. Null when it worked; otherwise why not, and the file is left where it is.
+    /// </summary>
+    TrashRefusal? MoveToTrash(string path) => new TrashRefusal("trash.no_recycle_bin");
+
     /// <summary>Process name (without extension) owning the window under the point, or <c>null</c>.</summary>
     string? ProcessNameAt(int x, int y);
+
+    /// <summary>
+    /// The window in front, the one keys go to: a keyboard shortcut's scope goes by it, not by what the pointer is over.
+    /// Null where the platform can't tell, and the pointer decides.
+    /// </summary>
+    ForegroundWindowInfo? GetForegroundWindow() => null;
+
+    /// <summary>
+    /// The modifier keys held now, as the system reports them, for matching mouse gestures; null where the global hook's
+    /// own event mask is right (it isn't on macOS while another app holds Secure Input, see the macOS implementation).
+    /// </summary>
+    ModifierKeys? CurrentModifiers() => null;
 
     /// <summary>
     /// Names of the apps that have a window open now, as <see cref="ProcessNameAt"/> reports them, sorted, without
@@ -41,9 +61,9 @@ public interface IPlatformServices
     }
 
     /// <summary>
-    /// The existing file or folder the shortcut at <paramref name="path"/> points to (a .lnk on Windows); null for
-    /// anything else, a broken shortcut, or a platform whose shortcuts Filee doesn't follow (macOS aliases and Linux
-    /// .desktop links aren't followed yet).
+    /// The existing file or folder the shortcut at <paramref name="path"/> points to (a .lnk on Windows, a Finder
+    /// alias on macOS); null for anything else, a broken shortcut, or a platform whose shortcuts Filee doesn't follow
+    /// (Linux .desktop links aren't followed yet).
     /// </summary>
     string? ShortcutTarget(string path) => null;
 
@@ -67,6 +87,23 @@ public interface IPlatformServices
     IReadOnlyList<string> GetFileManagerSelection();
 
     /// <summary>
+    /// Whether a keyboard shortcut can read the clipboard and put results back on it (<see cref="Settings.TriggerGesture.Clipboard"/>).
+    /// </summary>
+    bool SupportsClipboard => false;
+
+    /// <summary>
+    /// What is on the clipboard for a conversion: the existing files copied there, else a picture (a screenshot);
+    /// null for anything else (text, nothing). Call it on the UI thread.
+    /// </summary>
+    ClipboardContent? ReadClipboard() => null;
+
+    /// <summary>
+    /// Puts <paramref name="paths"/> on the clipboard as files, a single picture also as itself, so it pastes into
+    /// a file manager, a chat or a document. Call it on the UI thread. False when it couldn't.
+    /// </summary>
+    bool CopyToClipboard(IReadOnlyList<string> paths) => false;
+
+    /// <summary>
     /// For the log when a shortcut found no selected files: the foreground window's class and process
     /// ("CabinetWClass / explorer"). Empty where the platform can't tell.
     /// </summary>
@@ -84,7 +121,10 @@ public interface IPlatformServices
     /// <summary>True if the user asked the OS to reduce animations.</summary>
     bool PrefersReducedMotion { get; }
 
-    /// <summary>Adds or removes "start with the system".</summary>
+    /// <summary>
+    /// Adds or removes "start with the system". Throws <see cref="StartupEntryNotKeptException"/> where the platform can
+    /// tell that the entry it added didn't stay.
+    /// </summary>
     void SetStartWithSystem(bool enabled, string executablePath);
 
     /// <summary>Adds or removes the file manager context-menu entry ("Convert with Filee") and Send To shortcut.</summary>
@@ -119,7 +159,42 @@ public interface IPlatformServices
     /// window below normal ones (seen after the Photos app opened) while it still reports itself as topmost.
     /// </summary>
     void RaiseTopmost(nint windowHandle);
+
+    /// <summary>Restores temporary native window configuration after a raised window hides or before it closes.</summary>
+    void RestoreWindow(nint windowHandle) { }
+
+    /// <summary>
+    /// Remembers the app in front now, so <see cref="ReturnFocus"/> can give it the keyboard back: on macOS the donut
+    /// takes the keyboard during a drag. Elsewhere, and when this app is the one in front, nothing is remembered.
+    /// </summary>
+    void RememberFrontApp() { }
+
+    /// <summary>
+    /// Gives the keyboard back to the app <see cref="RememberFrontApp"/> remembered, if this app still has it (the user
+    /// didn't click elsewhere meanwhile) and that app still runs; forgets it either way.
+    /// </summary>
+    void ReturnFocus() { }
 }
+
+/// <summary>
+/// The "start with the system" entry read back after writing it was gone or different: something (security software,
+/// usually) took it away. The message is English, for the log; the UI says it in the user's language.
+/// </summary>
+public sealed class StartupEntryNotKeptException(string message) : IOException(message);
+
+/// <summary>
+/// What <see cref="IPlatformServices.ReadClipboard"/> found: <see cref="Files"/>, or else the bytes of a picture in
+/// <see cref="PictureExtension"/>'s format ("png").
+/// </summary>
+public sealed record ClipboardContent(IReadOnlyList<string> Files, byte[]? Picture = null, string? PictureExtension = null)
+{
+    public static ClipboardContent OfFiles(IReadOnlyList<string> files) => new(files);
+
+    public static ClipboardContent OfPicture(byte[] bytes, string extension) => new([], bytes, extension);
+}
+
+/// <summary>The window in front: its process name as <see cref="IPlatformServices.ProcessNameAt"/> reports it, and whether it belongs to the file manager or desktop.</summary>
+public sealed record ForegroundWindowInfo(string? ProcessName, bool IsFileManager);
 
 /// <summary>Whether "Convert with Filee" is in the top-level Windows 11 File Explorer menu (not just "Show more options").</summary>
 public enum ModernContextMenuState
@@ -180,3 +255,9 @@ public sealed class NullPlatformServices : IPlatformServices
         System.Diagnostics.Process.Start(start)?.Dispose();
     }
 }
+
+/// <summary>
+/// Why a file wasn't moved to the Recycle Bin / Trash: a localization key (<c>trash.*</c>) and, when the system said
+/// more, its own words.
+/// </summary>
+public sealed record TrashRefusal(string ReasonKey, string? Detail = null);

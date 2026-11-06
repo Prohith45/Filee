@@ -31,6 +31,33 @@ public class GroupEditorTests
     }
 
     [AvaloniaFact]
+    public void Presets_of_turned_off_fields_are_not_offered_but_members_stay()
+    {
+        TestServices.EnsureInitialized("en");
+        var settings = AppHost.Get<UserDataStore>().Settings;
+        var off = settings.TurnedOffFields;
+        settings.TurnedOffFields = ["font"];
+        try
+        {
+            var vm = Edit(new Preset { Name = "Fonts", Kind = PresetKind.Group, SubPresetIds = ["to-ttf"] });
+            Assert.Equal("to-ttf", Assert.Single(vm.Members).PresetId); // saved members aren't dropped (rule 7)
+            Assert.DoesNotContain(vm.Available, c => c.Value == "to-otf");
+            Assert.Contains(vm.Available, c => c.Value == "to-eot"); // also in Old formats, which is on
+            Assert.Contains(vm.Available, c => c.Value == "to-png");
+
+            vm.RemoveCommand.Execute(vm.Members[0]);
+            Assert.DoesNotContain(vm.Available, c => c.Value == "to-ttf");
+
+            settings.TurnedOffFields = [];
+            Assert.Contains(Edit(new Preset { Name = "Fonts", Kind = PresetKind.Group }).Available, c => c.Value == "to-otf");
+        }
+        finally
+        {
+            settings.TurnedOffFields = off;
+        }
+    }
+
+    [AvaloniaFact]
     public void Presets_are_added_in_order_moved_and_removed_then_saved_into_the_group()
     {
         var group = new Preset { Name = "Web", Kind = PresetKind.Group, TargetFormat = BuiltInData.SameAsSource };
@@ -50,6 +77,21 @@ public class GroupEditorTests
         Assert.True(vm.Apply());
         Assert.Equal(["to-webp", "to-jpg"], group.SubPresetIds);
         Assert.True(group.IsGroup);
+    }
+
+    [AvaloniaFact]
+    public void Pdf_edit_group_keeps_its_conversion_and_tool_actions_when_saved()
+    {
+        var group = BuiltInData.CreatePresets().Single(p => p.Id == "pdf-edit");
+        var vm = Edit(group);
+
+        Assert.Equal(group.SubPresetIds, vm.Members.Select(m => m.PresetId));
+        Assert.Equal(Preset.MaxSubPresets, vm.Members.Count);
+        Assert.True(vm.Apply());
+        Assert.Equal([
+            "tool-pdf-crop", "pdf-rotate-left", "pdf-rotate-right",
+            "tool-pdf-pages", "pdf-split", "tool-pdf-add",
+        ], group.SubPresetIds);
     }
 
     [AvaloniaFact]

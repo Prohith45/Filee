@@ -1,0 +1,352 @@
+// "Pixelate / blur" through the real image engine: the parts become squares of their average colour, a blur that leaves
+// none of their detail or opaque black boxes, each part as its own style says, the rest of the picture keeps every
+// pixel, the parts land on the picture as it is seen (EXIF orientation), the format stays, and the previews a file
+// carries of the uncovered picture go.
+
+using Filee.Core.Conversion;
+using Filee.Core.Presets;
+using Filee.Engines.Magick;
+using ImageMagick;
+
+namespace Filee.Engines.Tests;
+
+public class HideAreasTests(EngineFixture fx) : IClassFixture<EngineFixture>
+{
+    private static Preset Hide(HideStyle style, int strength, params HiddenArea[] areas)
+    {
+        var tool = BuiltInData.CreatePresets().Single(p => p.Id == "tool-hide");
+        HideTool.Remember(tool, style, strength);
+        return HideTool.ConversionOf(tool, BuiltInData.SameAsSource, areas);
+    }
+
+    private static HiddenArea Area(double x, double y, double w, double h) => new() { X = x, Y = y, Width = w, Height = h };
+
+    /// <summary>A picture of random grey noise: every pixel differs from its neighbours, the hardest thing to cover.</summary>
+    private static MagickImage Noise(uint width, uint height, int seed = 7)
+    {
+        var random = new Random(seed);
+        var pixels = new byte[width * height * 3];
+        random.NextBytes(pixels);
+        var image = new MagickImage(MagickColors.Black, width, height);
+        image.ImportPixels(pixels, new PixelImportSettings(width, height, StorageType.Char, PixelMapping.RGB));
+        return image;
+    }
+
+    private async Task<string> RunAsync(string input, Preset preset)
+    {
+        var job = await fx.ConvertAsync([input], preset);
+        Assert.True(job.State == JobState.Completed, string.Join("; ", job.Files.Select(f => $"{f.ErrorKey} {f.ErrorDetail}")));
+        return Assert.Single(job.Outputs);
+    }
+
+    private static byte[] Rgb(IMagickImage<byte> image) => image.GetPixels().ToByteArray(PixelMapping.RGB)!;
+
+    [Fact]
+    public async Task Pixelate_turns_the_part_into_squares_of_its_average_and_keeps_everything_else()
+    {
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "noise.png");
+        using (var source = Noise(500, 400))
+            source.Write(path, MagickFormat.Png);
+        // Strength 5 on a 400 px tall picture: squares of 16 px (4 %), laid from the top-left corner of the picture.
+        var cell = (int)Math.Round(HideTool.EffectSize(5, 500, 400));
+        Assert.Equal(16, cell);
+
+        var output = await RunAsync(path, Hide(HideStyle.Pixelate, 5, Area(0.1, 0.1, 0.4, 0.5))); // 50, 40, 200 × 200
+
+        Assert.Equal(Path.Combine(folder, "noise_hidden.png"), output);
+        using var before = new MagickImage(path);
+        using var after = new MagickImage(output);
+        var (a, b) = (Rgb(before), Rgb(after));
+        int Index(int x, int y) => (y * 500 + x) * 3;
+        for (var y = 0; y < 400; y++)
+        {
+            for (var x = 0; x < 500; x++)
+            {
+                var inside = x is >= 50 and < 250 && y is >= 40 and < 240;
+                if (!inside)
+                {
+                    Assert.True(a[Index(x, y)] == b[Index(x, y)] && a[Index(x, y) + 2] == b[Index(x, y) + 2], $"({x}, {y}) changed");
+                    continue;
+                }
+                // Inside: the colour of its square's first pixel inside the part, and of no single source pixel nearby.
+                var (sx, sy) = (Math.Max(50, x / cell * cell), Math.Max(40, y / cell * cell));
+                Assert.Equal(b[Index(sx, sy)], b[Index(x, y)]);
+            }
+        }
+        // A square wholly inside the part (64…80 × 48…64) is its exact average.
+        for (var c = 0; c < 3; c++)
+        {
+            long sum = 0;
+            for (var y = 48; y < 64; y++)
+                for (var x = 64; x < 80; x++)
+                    sum += a[Index(x, y) + c];
+            Assert.Equal((byte)((sum + 128) / 256), b[Index(70, 50) + c]);
+        }
+    }
+
+    [Fact]
+    public async Task A_black_box_is_opaque_black_and_each_part_takes_its_own_style()
+    {
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "noise.png");
+        using (var source = Noise(400, 200))
+        {
+            // Half transparent everywhere: a box must not let any of what was there show through.
+            source.Alpha(AlphaAction.Set);
+            source.Evaluate(Channels.Alpha, EvaluateOperator.Set, Quantum.Max / 2);
+            source.Write(path, MagickFormat.Png);
+        }
+        var box = Area(0.1, 0.1, 0.3, 0.5);                                    // 40, 20, 120 × 100
+        box.Style = HideStyle.Box;
+        var pixelated = Area(0.6, 0.1, 0.3, 0.5);                              // no style of its own: the preset's
+
+        var output = await RunAsync(path, Hide(HideStyle.Pixelate, 5, box, pixelated));
+
+        using var before = new MagickImage(path);
+        using var after = new MagickImage(output);
+        var a = before.GetPixels().ToByteArray(PixelMapping.RGBA)!;
+        var b = after.GetPixels().ToByteArray(PixelMapping.RGBA)!;
+        int Index(int x, int y) => (y * 400 + x) * 4;
+        for (var y = 20; y < 120; y++)
+            for (var x = 40; x < 160; x++)
+                Assert.Equal((0, 0, 0, 255), (b[Index(x, y)], b[Index(x, y) + 1], b[Index(x, y) + 2], b[Index(x, y) + 3]));
+        // Just outside the box, as it was; the other part pixelated (two neighbours in one square alike, unlike
+        // before).
+        Assert.Equal(a[Index(39, 50)], b[Index(39, 50)]);
+        Assert.Equal(a[Index(160, 50)], b[Index(160, 50)]);
+        Assert.Equal(b[Index(250, 50)], b[Index(251, 50)]);
+        Assert.NotEqual((0, 0, 0), (b[Index(250, 50)], b[Index(250, 50) + 1], b[Index(250, 50) + 2]));
+    }
+
+    [Theory]
+    [InlineData("tif")]
+    [InlineData("jpg")]
+    public async Task A_black_box_on_a_cmyk_picture_is_full_black_ink_and_its_text_is_gone(string extension)
+    {
+        // Text in black ink only (K), as print files have it. A box made in sRGB and copied in channel by channel came
+        // out with C, M, Y and K all 0: white paper.
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "print." + extension);
+        using (var source = new MagickImage(MagickColors.White, 300, 100))
+        {
+            for (var row = 30; row <= 70; row += 20)
+            {
+                using var line = new MagickImage(MagickColors.Black, 180, 5);
+                source.Composite(line, 60, row, CompositeOperator.Copy);
+            }
+            source.ColorSpace = ColorSpace.CMYK;
+            source.Quality = 95;
+            source.Write(path);
+        }
+        var box = Area(0.1, 0.1, 0.8, 0.8);                                    // 30, 10, 240 × 80
+        box.Style = HideStyle.Box;
+
+        var output = await RunAsync(path, Hide(HideStyle.Pixelate, 5, box));
+
+        using var after = new MagickImage(output);
+        Assert.Equal(ColorSpace.CMYK, after.ColorSpace);
+        using var pixels = after.GetPixels();
+        // Inside, away from the box's edge (JPEG blends 8 px blocks across it): no C, M or Y and all K, on the lines of
+        // text and between them. The TIFF is exact.
+        var tolerance = extension == "jpg" ? 12 : 0;
+        foreach (var (x, y) in new[] { (150, 32), (150, 42), (150, 52), (100, 72), (60, 20) })
+        {
+            var value = pixels.GetValue(x, y)!;
+            Assert.True(value[0] <= tolerance && value[1] <= tolerance && value[2] <= tolerance && value[3] >= 255 - tolerance,
+                $"({x}, {y}): {string.Join(",", value)}");
+        }
+        // Outside the box, still white paper.
+        Assert.True(pixels.GetValue(10, 50)![3] <= tolerance);
+    }
+
+    [Theory]
+    [InlineData(HideStyle.Box)]
+    [InlineData(HideStyle.Pixelate)]
+    public async Task Extra_channels_of_a_tiff_keep_nothing_of_the_part(HideStyle style)
+    {
+        // A TIFF with two extra samples beside RGBA (read as meta channels), each its own noise. Pixelate and Box write
+        // colours and alpha only: without clearing them, the part stayed in those channels pixel for pixel.
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "layers.tif");
+        using (var channels = new MagickImageCollection())
+        {
+            for (var seed = 1; seed <= 6; seed++)
+            {
+                var channel = Noise(300, 200, seed);
+                channel.ColorType = ColorType.Grayscale;
+                channels.Add(channel);
+            }
+            using var combined = channels.Combine(ColorSpace.sRGB);
+            combined.Write(path, MagickFormat.Tiff);
+        }
+        var area = Area(0.1, 0.1, 0.5, 0.5);                                   // 30, 20, 150 × 100
+
+        var output = await RunAsync(path, Hide(style, 5, area));
+
+        using var before = new MagickImage(path);
+        using var after = new MagickImage(output);
+        Assert.Equal([PixelChannel.Meta0, PixelChannel.Meta1], after.Channels.Where(c => c >= PixelChannel.Meta0));
+        using var a = before.GetPixels();
+        using var b = after.GetPixels();
+        int[] extra = [4, 5];
+        for (var y = 20; y < 120; y++)
+            for (var x = 30; x < 180; x++)
+                foreach (var c in extra)
+                    Assert.Equal(0, b.GetValue(x, y)![c]);
+        // Outside the part, every channel as it was.
+        foreach (var (x, y) in new[] { (29, 50), (180, 50), (100, 19), (100, 120), (250, 150) })
+            Assert.Equal(a.GetValue(x, y), b.GetValue(x, y));
+    }
+
+    [Fact]
+    public async Task Blur_leaves_none_of_the_parts_detail_and_keeps_everything_else()
+    {
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "noise.png");
+        using (var source = Noise(600, 400))
+            source.Write(path, MagickFormat.Png);
+
+        var output = await RunAsync(path, Hide(HideStyle.Blur, HideTool.MinStrength, Area(0.25, 0.25, 0.5, 0.5))); // 150, 100, 300 × 200
+
+        using var before = new MagickImage(path);
+        using var after = new MagickImage(output);
+        var (a, b) = (Rgb(before), Rgb(after));
+        int Index(int x, int y) => (y * 600 + x) * 3;
+        // Noise has a spread of about 74 levels; even the weakest blur leaves next to none inside the part (away from its
+        // edges, where the noise around it still counts).
+        var inside = new List<double>();
+        for (var y = 130; y < 270; y++)
+            for (var x = 180; x < 420; x++)
+                inside.Add(b[Index(x, y)]);
+        var mean = inside.Average();
+        var spread = Math.Sqrt(inside.Average(v => (v - mean) * (v - mean)));
+        Assert.True(spread < 3, $"spread {spread:0.00}");
+        Assert.InRange(mean, 110, 145);
+        // Outside, every pixel as it was.
+        for (var y = 0; y < 400; y += 3)
+        {
+            for (var x = 0; x < 600; x += 3)
+            {
+                if (x is >= 150 and < 450 && y is >= 100 and < 300)
+                    continue;
+                Assert.True(a[Index(x, y)] == b[Index(x, y)], $"({x}, {y}) changed");
+            }
+        }
+    }
+
+    [Fact]
+    public void A_light_blur_would_keep_the_detail_this_one_takes()
+    {
+        // The reason for the size: a blur of a pixel and a half leaves strokes of a desktop screenshot's text (4 px apart)
+        // easy to tell, and sharpening would bring them back; the weakest blur on that screenshot (1920 × 1080) leaves
+        // no more than the rounding of a level of 255 of them.
+        var data = new byte[400 * 200 * 3];
+        for (var y = 0; y < 200; y++)
+            for (var x = 0; x < 400; x++)
+                data[(y * 400 + x) * 3] = data[(y * 400 + x) * 3 + 1] = data[(y * 400 + x) * 3 + 2] = (byte)(x / 4 % 2 == 0 ? 0 : 255);
+        using var stripes = new MagickImage(MagickColors.White, 400, 200);
+        stripes.ImportPixels(data, new PixelImportSettings(400, 200, StorageType.Char, PixelMapping.RGB));
+
+        double Contrast(double sigma)
+        {
+            using var copy = stripes.Clone();
+            AreaHider.Blur(copy, (0, 0, 400, 200), sigma);
+            var row = copy.GetPixels().ToByteArray(0, 100, 400, 1, PixelMapping.RGB)!;
+            var values = Enumerable.Range(100, 200).Select(x => (double)row[x * 3]).ToList();
+            return values.Max() - values.Min();
+        }
+
+        var light = Contrast(1.5);
+        var weakest = Contrast(HideTool.EffectSize(HideTool.MinStrength, 1920, 1080));
+        Assert.True(light > 100, $"{light}");
+        Assert.True(weakest <= 1, $"{weakest}");
+    }
+
+    [Fact]
+    public async Task Two_parts_that_meet_share_one_grid_and_a_jpeg_stays_a_jpeg()
+    {
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "shot.jpg");
+        using (var source = Noise(800, 500))
+        {
+            source.Quality = 95;
+            source.Write(path, MagickFormat.Jpeg);
+        }
+
+        var output = await RunAsync(path, Hide(HideStyle.Pixelate, 1, Area(0.1, 0.2, 0.2, 0.3), Area(0.3, 0.2, 0.2, 0.3)));
+
+        Assert.Equal(Path.Combine(folder, "shot_hidden.jpg"), output);
+        using var after = new MagickImage(output);
+        Assert.Equal(MagickFormat.Jpeg, after.Format);
+        Assert.Equal((800u, 500u), (after.Width, after.Height));
+    }
+
+    [Fact]
+    public async Task The_parts_land_where_they_were_drawn_on_a_photo_turned_by_its_EXIF_orientation()
+    {
+        // Stored 300 × 200, shown upright as 200 × 300 (turned 90° clockwise): the part is on the upright picture's top
+        // left quarter.
+        var folder = fx.NewFolder();
+        var path = Path.Combine(folder, "phone.png");
+        using (var stored = Noise(300, 200))
+        {
+            stored.Orientation = Orientation.RightTop;
+            stored.Write(path, MagickFormat.Png);
+        }
+        using var upright = new MagickImage(path);
+        upright.AutoOrient();
+        Assert.Equal((200u, 300u), (upright.Width, upright.Height));
+
+        var output = await RunAsync(path, Hide(HideStyle.Pixelate, 5, Area(0, 0, 0.5, 0.5)));
+
+        using var after = new MagickImage(output);
+        after.AutoOrient();
+        Assert.Equal((200u, 300u), (after.Width, after.Height));
+        var (a, b) = (Rgb(upright), Rgb(after));
+        int Index(int x, int y) => (y * 200 + x) * 3;
+        Assert.NotEqual(a[Index(10, 10)..(Index(10, 10) + 30)], b[Index(10, 10)..(Index(10, 10) + 30)]); // covered
+        Assert.Equal(a[Index(150, 200)..(Index(150, 200) + 30)], b[Index(150, 200)..(Index(150, 200) + 30)]); // as it was
+    }
+
+    [Fact]
+    public void The_window_shows_what_the_file_gets()
+    {
+        // The preview covers the whole picture with the same squares the conversion lays on a part.
+        using var picture = Noise(320, 240);
+        using var preview = picture.Clone();
+        var cell = Math.Round(HideTool.EffectSize(5, 320, 240));
+        Assert.Equal(10, cell);
+        AreaHider.Cover(preview, HideStyle.Pixelate, cell);
+        using var converted = picture.Clone();
+        AreaHider.Apply(converted, new ImageOptions { HideStrength = 5, HiddenAreas = [Area(0.25, 0.25, 0.5, 0.5)] });
+        Assert.Equal(preview.GetPixels().ToByteArray(80, 60, 160, 120, PixelMapping.RGB),
+            converted.GetPixels().ToByteArray(80, 60, 160, 120, PixelMapping.RGB));
+    }
+
+    [Fact]
+    public void Previews_of_the_uncovered_picture_go_and_other_metadata_stays()
+    {
+        using var image = Noise(64, 64);
+        image.SetProfile(new ImageProfile("8bim", [0x38, 0x42, 0x49, 0x4D, 0x04, 0x0C, 0, 0, 0, 0, 0, 0]));
+        image.SetProfile(new XmpProfile(System.Text.Encoding.UTF8.GetBytes(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" +
+            "<rdf:Description xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"><xmp:Thumbnails>thumb</xmp:Thumbnails></rdf:Description>" +
+            "</rdf:RDF></x:xmpmeta>")));
+        var exif = new ExifProfile();
+        exif.SetValue(ExifTag.Make, "Phone");
+        image.SetProfile(exif);
+
+        AreaHider.Apply(image, new ImageOptions { HiddenAreas = [Area(0.1, 0.1, 0.5, 0.5)] });
+
+        Assert.False(image.HasProfile("8bim"));
+        Assert.Null(image.GetXmpProfile());
+        Assert.Equal("Phone", image.GetExifProfile()?.GetValue(ExifTag.Make)?.Value);
+
+        // Without parts nothing is touched.
+        using var untouched = Noise(64, 64);
+        untouched.SetProfile(new ImageProfile("8bim", [0x38, 0x42, 0x49, 0x4D, 0x04, 0x0C, 0, 0, 0, 0, 0, 0]));
+        AreaHider.Apply(untouched, new ImageOptions());
+        Assert.True(untouched.HasProfile("8bim"));
+    }
+}

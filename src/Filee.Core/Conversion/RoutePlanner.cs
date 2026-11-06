@@ -13,8 +13,9 @@ namespace Filee.Core.Conversion;
 /// <param name="Unshaped">The hop draws text without complex-script shaping (<see cref="ConversionEdge.Unshaped"/>).</param>
 /// <param name="MotionPhoto">The hop takes the video of a Live / Motion Photo (<see cref="ConversionEdge.MotionPhoto"/>).</param>
 /// <param name="LivePhoto">The hop makes a Live / Motion Photo of a video (<see cref="ConversionEdge.LivePhoto"/>).</param>
+/// <param name="Caption">The hop transcribes speech to SRT subtitles using Whisper (<see cref="ConversionEdge.Caption"/>).</param>
 public sealed record RouteStep(IConverter Converter, string From, string To, bool FrameSequence = false, bool Unshaped = false,
-    bool MotionPhoto = false, bool LivePhoto = false);
+    bool MotionPhoto = false, bool LivePhoto = false, bool Caption = false, bool Translate = false);
 
 /// <summary>A planned conversion from one format to another.</summary>
 public sealed record Route(IReadOnlyList<RouteStep> Steps, int Cost)
@@ -74,23 +75,37 @@ public sealed class RoutePlanner
     /// Make a Live / Motion Photo of a video (<see cref="Presets.Preset.MakesLivePhotoOf"/>): the route is one
     /// <see cref="ConversionEdge.LivePhoto"/> edge, or none. Without it those edges are never taken.
     /// </param>
-    public Route? Plan(string from, string to, bool frames = false, bool shaping = false, bool motionPhoto = false, bool livePhoto = false)
+    /// <param name="ocr">
+    /// Recognize the text first (<see cref="Presets.Preset.RecognizesTextOf"/>): an <see cref="ConversionEdge.Ocr"/>
+    /// edge to PDF, from the file itself or from a PNG of a picture Tesseract can't read, then the cheapest route from
+    /// that PDF on. Without it those edges are never taken.
+    /// </param>
+    /// <param name="caption">Transcribe speech to SRT subtitles using Whisper (<see cref="Presets.Preset.CaptionsVideo"/>).</param>
+    public Route? Plan(string from, string to, bool frames = false, bool shaping = false, bool motionPhoto = false, bool livePhoto = false,
+        bool ocr = false, bool caption = false, bool translate = false)
     {
         from = from.ToLowerInvariant();
         to = to.ToLowerInvariant();
 
-        if (frames || motionPhoto || livePhoto)
+        if (ocr)
+            return PlanWithOcr(from, to, shaping);
+
+        if (translate)
+            return PlanWithTranslate(from, to, shaping);
+
+        if (frames || motionPhoto || livePhoto || caption)
         {
-            // One of them: frames, then the video of a photo, then a photo of a video.
+            // One of them: frames, then the video of a photo, then a photo of a video, then caption.
             motionPhoto &= !frames;
             livePhoto &= !frames && !motionPhoto;
+            caption &= !frames && !motionPhoto && !livePhoto;
             var special = EdgesFrom(from)
-                .Where(e => e.Edge.To == to && (frames ? e.Edge.FrameSequence : motionPhoto ? e.Edge.MotionPhoto : e.Edge.LivePhoto))
+                .Where(e => e.Edge.To == to && (frames ? e.Edge.FrameSequence : motionPhoto ? e.Edge.MotionPhoto : livePhoto ? e.Edge.LivePhoto : caption ? e.Edge.Caption : false))
                 .OrderBy(e => e.Cost)
                 .FirstOrDefault();
             return special.Converter is null
                 ? null
-                : new Route([new RouteStep(special.Converter, from, to, FrameSequence: frames, MotionPhoto: motionPhoto, LivePhoto: livePhoto)],
+                : new Route([new RouteStep(special.Converter, from, to, FrameSequence: frames, MotionPhoto: motionPhoto, LivePhoto: livePhoto, Caption: caption)],
                     special.Cost);
         }
 
@@ -98,7 +113,7 @@ public sealed class RoutePlanner
         if (from == to)
         {
             var best = EdgesFrom(from)
-                .Where(e => e.Edge.To == to && !e.Edge.FrameSequence && !e.Edge.MotionPhoto && !e.Edge.LivePhoto)
+                .Where(e => e.Edge.To == to && !e.Edge.FrameSequence && !e.Edge.MotionPhoto && !e.Edge.LivePhoto && !e.Edge.Ocr && !e.Edge.Caption && !e.Edge.Translate)
                 .OrderBy(e => e.Cost)
                 .FirstOrDefault();
             return best.Converter is null
@@ -127,7 +142,7 @@ public sealed class RoutePlanner
 
             foreach (var (converter, edge, edgeCost) in EdgesFrom(node))
             {
-                if (edge.To == edge.From || edge.FrameSequence || edge.MotionPhoto || edge.LivePhoto
+                if (edge.To == edge.From || edge.FrameSequence || edge.MotionPhoto || edge.LivePhoto || edge.Ocr || edge.Translate || edge.Caption
                     || (edge.ImageSourcesOnly && !imageSource) || (edge.NotForImageSources && imageSource)
                     || (edge.Unshaped && shaping)
                     || (edge.DirectOnly && (node != from || edge.To != to)))
@@ -157,8 +172,86 @@ public sealed class RoutePlanner
     /// <param name="frames">Every frame of a video as pictures (see <see cref="Plan"/>).</param>
     /// <param name="motionPhoto">The video of a Live / Motion Photo (see <see cref="Plan"/>).</param>
     /// <param name="livePhoto">A Live / Motion Photo of a video (see <see cref="Plan"/>).</param>
-    public bool CanConvert(string from, string to, bool frames = false, bool motionPhoto = false, bool livePhoto = false) =>
-        Plan(from, to, frames, motionPhoto: motionPhoto, livePhoto: livePhoto) is not null;
+    /// <param name="ocr">Recognize the text first (see <see cref="Plan"/>).</param>
+    /// <param name="caption">Transcribe speech to SRT subtitles using Whisper (see <see cref="Plan"/>).</param>
+    public bool CanConvert(string from, string to, bool frames = false, bool motionPhoto = false, bool livePhoto = false, bool ocr = false, bool caption = false, bool translate = false) =>
+        Plan(from, to, frames, motionPhoto: motionPhoto, livePhoto: livePhoto, ocr: ocr, caption: caption, translate: translate) is not null;
+
+    private Route? PlanWithTranslate(string from, string to, bool shaping)
+    {
+        var direct = EdgesFrom(from)
+            .Where(e => e.Edge.To == to && e.Edge.Translate)
+            .OrderBy(e => e.Cost)
+            .FirstOrDefault();
+        if (direct.Converter is not null)
+            return new Route([new RouteStep(direct.Converter, from, to, Translate: true)], direct.Cost);
+
+        if (from is "azw3" or "mobi" or "azw" or "prc")
+        {
+            var toEpub = EdgesFrom(from)
+                .Where(e => e.Edge.To == "epub" && e.Edge.Translate)
+                .OrderBy(e => e.Cost)
+                .FirstOrDefault();
+            if (toEpub.Converter is null)
+                return null;
+
+            var translateStep = new RouteStep(toEpub.Converter, from, "epub", Translate: true);
+            if (to == "epub")
+                return new Route([translateStep], toEpub.Cost);
+
+            var rest = Plan("epub", to, shaping: shaping);
+            if (rest is null)
+                return null;
+
+            return new Route([translateStep, .. rest.Steps], toEpub.Cost + rest.Cost);
+        }
+
+        var selfTranslate = EdgesFrom(from)
+            .Where(e => e.Edge.To == from && e.Edge.Translate)
+            .OrderBy(e => e.Cost)
+            .FirstOrDefault();
+        if (selfTranslate.Converter is not null)
+        {
+            var translateStep = new RouteStep(selfTranslate.Converter, from, from, Translate: true);
+            var rest = Plan(from, to, shaping: shaping);
+            if (rest is not null)
+                return new Route([translateStep, .. rest.Steps], selfTranslate.Cost + rest.Cost);
+        }
+
+        return null;
+    }
+
+    private Route? PlanWithOcr(string from, string to, bool shaping)
+    {
+        var steps = new List<RouteStep>();
+        var cost = 0;
+        var source = from;
+        if (OcrEdge(from).Converter is null)
+        {
+            // A picture Tesseract can't open (HEIC, PSD, …) becomes a PNG first.
+            if (FormatRegistry.FindById(from)?.Category != FormatCategory.Image || Plan(from, "png", shaping: shaping) is not { } toPng)
+                return null;
+            steps.AddRange(toPng.Steps);
+            cost += toPng.Cost;
+            source = "png";
+        }
+        var ocr = OcrEdge(source);
+        if (ocr.Converter is null)
+            return null;
+        steps.Add(new RouteStep(ocr.Converter, source, "pdf"));
+        cost += ocr.Cost;
+        if (to != "pdf")
+        {
+            if (Plan("pdf", to, shaping: shaping) is not { } rest)
+                return null;
+            steps.AddRange(rest.Steps);
+            cost += rest.Cost;
+        }
+        return new Route(steps, cost);
+    }
+
+    private (IConverter Converter, ConversionEdge Edge, int Cost) OcrEdge(string from) =>
+        EdgesFrom(from).Where(e => e.Edge.Ocr && e.Edge.To == "pdf").OrderBy(e => e.Cost).FirstOrDefault();
 
     private IReadOnlyList<(IConverter Converter, ConversionEdge Edge, int Cost)> EdgesFrom(string format) =>
         _edgesFrom.TryGetValue(format, out var edges) ? edges : [];

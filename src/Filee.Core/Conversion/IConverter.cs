@@ -30,7 +30,7 @@ namespace Filee.Core.Conversion;
 /// <param name="FrameSequence">
 /// The edge writes every frame of a video as numbered pictures into a folder (<see cref="Presets.MediaOptions.SaveEveryFrame"/>).
 /// It is never part of an ordinary route (a video → JPG stays one still frame), and with
-/// <see cref="RoutePlanner.Plan(string, string, bool, bool, bool, bool)"/> asking for frames it is the whole route.
+/// <see cref="RoutePlanner.Plan"/> asking for frames it is the whole route.
 /// </param>
 /// <param name="Unshaped">
 /// The engine draws text one character after the other, left to right, without complex-script shaping (no joined
@@ -43,16 +43,25 @@ namespace Filee.Core.Conversion;
 /// <param name="MotionPhoto">
 /// The edge takes the video out of a Live / Motion Photo (<see cref="Presets.MediaOptions.ExtractMotionPhoto"/>). It is
 /// never part of an ordinary route (a photo → MP4 is otherwise a video of the still picture), and with
-/// <see cref="RoutePlanner.Plan(string, string, bool, bool, bool, bool)"/> asking for it it is the whole route.
+/// <see cref="RoutePlanner.Plan"/> asking for it it is the whole route.
 /// </param>
 /// <param name="LivePhoto">
 /// The edge makes a Live / Motion Photo of a short clip of a video (<see cref="Presets.MediaOptions.LivePhoto"/>). It is
 /// never part of an ordinary route (a video → JPG is otherwise one still frame), and with
-/// <see cref="RoutePlanner.Plan(string, string, bool, bool, bool, bool)"/> asking for it it is the whole route.
+/// <see cref="RoutePlanner.Plan"/> asking for it it is the whole route.
+/// </param>
+/// <param name="Ocr">
+/// The edge recognizes the text of a scan or a picture and writes a searchable PDF (<see cref="Presets.PdfOptions.Ocr"/>).
+/// It is never part of an ordinary route, and with <see cref="RoutePlanner.Plan"/>
+/// asking for it the route starts with it.
+/// </param>
+/// <param name="Caption">
+/// The edge transcribes speech to SRT subtitles using Whisper (<see cref="Presets.MediaOptions.Caption"/>).
 /// </param>
 public readonly record struct ConversionEdge(
     string From, string To, int Cost = 10, bool ImageSourcesOnly = false, bool NotForImageSources = false,
-    bool DirectOnly = false, bool FrameSequence = false, bool Unshaped = false, bool MotionPhoto = false, bool LivePhoto = false);
+    bool DirectOnly = false, bool FrameSequence = false, bool Unshaped = false, bool MotionPhoto = false, bool LivePhoto = false,
+    bool Ocr = false, bool Caption = false, bool Translate = false);
 
 /// <summary>
 /// A conversion an engine refuses with a reason the user can act on, shown in their language (the file's
@@ -122,6 +131,7 @@ public interface IOutputAllocator
 /// The step takes a <see cref="ConversionEdge.LivePhoto"/> edge: a clip of the video becomes a Live / Motion Photo
 /// (<see cref="Presets.MediaOptions.LivePhoto"/> says which kind).
 /// </param>
+/// <param name="Caption">The step takes a <see cref="ConversionEdge.Caption"/> edge to transcribe speech to SRT subtitles using Whisper.</param>
 public sealed record ConversionStep(
     string InputPath,
     string From,
@@ -134,7 +144,9 @@ public sealed record ConversionStep(
     bool MotionPhoto = false,
     bool LivePhoto = false,
     Action<IReadOnlyList<string>>? MissingFonts = null,
-    string? OriginalSourcePath = null);
+    string? OriginalSourcePath = null,
+    bool Caption = false,
+    bool Translate = false);
 
 /// <summary>
 /// A conversion engine (ImageMagick, LibreOffice, rhwp, ...).
@@ -214,6 +226,17 @@ public interface IPdfMerger
 }
 
 /// <summary>
+/// Adds a watermark and page numbers to a finished PDF and locks it with a password
+/// (<see cref="Presets.PdfOptions.FinishesPdf"/>). Implemented by the PDF engine; <see cref="JobQueue"/> runs it on
+/// every PDF a job writes, whichever engine made it, and on a merged PDF once, after merging.
+/// </summary>
+public interface IPdfFinisher
+{
+    /// <summary>Rewrites <paramref name="path"/> in place.</summary>
+    Task FinishAsync(string path, Presets.PdfOptions options, CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Writes TIFF pages (and every page of multi-page TIFFs) into one multi-page TIFF, in order. Implemented by the
 /// ImageMagick engine; <see cref="JobQueue"/> uses it when a preset sets <see cref="Presets.ImageOptions.MultiPageTiff"/>.
 /// </summary>
@@ -240,6 +263,30 @@ public interface IMediaJoiner
     /// <param name="workDirectory">Scratch directory for intermediate files; deleted after the job.</param>
     Task JoinAsync(IReadOnlyList<string> inputPaths, string outputPath, string format, Preset preset,
         string workDirectory, IProgress<double>? progress, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Puts several pictures into one image, one under another or side by side ("Merge images"). Implemented by the
+/// ImageMagick engine; <see cref="JobQueue"/> uses it when a preset merges pictures (<see cref="Preset.JoinsImages"/>).
+/// </summary>
+public interface IImageJoiner
+{
+    /// <summary>True if pictures of <paramref name="format"/> are read as they are; others become PNG first.</summary>
+    bool CanRead(string format);
+
+    /// <summary>True if the merged image can be written as <paramref name="format"/>.</summary>
+    bool CanWrite(string format);
+
+    /// <summary>
+    /// Writes the pictures of <paramref name="inputs"/>, in order, into one image laid out as
+    /// <paramref name="options"/> say (<see cref="ImageOptions.JoinDirection"/>, …). Refuses with
+    /// <c>error.merged_image_too_large</c> when the image would be too large to make.
+    /// </summary>
+    /// <param name="inputs">Each picture and its format id.</param>
+    /// <param name="outputPath">File to create.</param>
+    /// <param name="format">Target format id, one <see cref="CanWrite"/> takes.</param>
+    Task JoinAsync(IReadOnlyList<(string Path, string Format)> inputs, string outputPath, string format, ImageOptions options,
+        IProgress<double>? progress, CancellationToken cancellationToken);
 }
 
 /// <summary>

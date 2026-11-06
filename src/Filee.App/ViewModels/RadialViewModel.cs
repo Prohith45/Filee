@@ -32,7 +32,7 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     [ObservableProperty] private bool _canShowTools;
 
     /// <summary>
-    /// "Tab ↻ back" / "Tab ↻ front" in the hub (with the flip key of the settings) while <see cref="CanFlip"/> and a key
+    /// "⟳ Tab back" / "⟳ Tab front" (the arrow drawn, #554) in the hub (with the flip key of the settings) while <see cref="CanFlip"/> and a key
     /// or the wheel flips; else null.
     /// </summary>
     [ObservableProperty] private string? _flipHint;
@@ -101,6 +101,9 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     private IReadOnlyList<string> _backIds = [];
     private IReadOnlyList<string> _toolsIds = [];
     private IReadOnlyList<FileFormat> _formats = [];
+    // The turned-off fields the last Load hid, already without the dropped files' own fields, so the back face is
+    // filtered with the same set as the front.
+    private IReadOnlySet<string> _off = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private Face? _back;
     private Face? _tools;
     private DonutFace _returnFace = DonutFace.Front;
@@ -147,6 +150,7 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         ReserveSubRing = store.Profiles.Any(profile => HasGroups(profile.PresetIds.Concat(profile.BackPresetIds ?? []).Concat(profile.ToolPresetIds ?? [])));
         _loads++;
         (_front, _back, _tools, _backIds, _toolsIds, _formats) = (Face.Empty, Face.Empty, Face.Empty, [], [], []);
+        _off = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _returnFace = DonutFace.Front;
         ShowFace(DonutFace.Front);
         CenterTitle = loc["donut.center_drag"];
@@ -172,9 +176,15 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         var counted = CompanionFiles.WithoutCompanions(files);
         var profile = ProfileSelector.Select(store.Profiles, counted);
         var formats = ProfileSelector.DetectFormats(counted);
+        // A turned-off field still shows the formats of the dropped files' own fields (FORMAT-RULES rule 4): a font file
+        // offers font conversions with Fonts off. The front takes this local, not _off, which holds the last load's set
+        // until the line after it.
+        var off = store.Settings.TurnedOffFields
+            .Except(formats.SelectMany(FormatFields.Of).Select(field => field.Id), StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Both faces follow the same rule: a slice that can't convert these files is greyed out and says why.
-        _front = BuildFace(profile?.PresetIds ?? [], formats);
-        (_back, _backIds, _formats) = (null, [.. profile?.BackPresetIds ?? []], formats);
+        _front = BuildFace(profile?.PresetIds ?? [], formats, off);
+        (_back, _backIds, _formats, _off) = (null, [.. profile?.BackPresetIds ?? []], formats, off);
         (_tools, _toolsIds) = (null, [.. profile?.ToolPresetIds ?? []]);
         _returnFace = DonutFace.Front;
         var load = ++_loads;
@@ -205,7 +215,7 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     }
 
     /// <summary>
-    /// Shows the other face (the donut is edge-on in its flip). Returns false, changing nothing, when it has no slice
+    /// Shows the other face (at the start of the donut's flip). Returns false, changing nothing, when it has no slice
     /// for these files (<see cref="CanFlip"/>).
     /// </summary>
     public bool ToggleFace()
@@ -305,24 +315,39 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
     }
 
     /// <summary>The back face's slices for the files, checked now if they weren't yet.</summary>
-    private Face BackFace() => _back ??= BuildFace(_backIds, _formats);
+    private Face BackFace() => _back ??= BuildFace(_backIds, _formats, _off);
 
     /// <summary>The tools face's slices for the files, checked now if they weren't yet.</summary>
-    private Face ToolsFace() => _tools ??= BuildFace(_toolsIds, _formats);
+    private Face ToolsFace() => _tools ??= BuildFace(_toolsIds, _formats, _off);
 
     private bool HasGroups(IEnumerable<string> presetIds) => presetIds.Any(id => store.FindPreset(id)?.IsGroup == true);
 
-    private Face BuildFace(IEnumerable<string> presetIds, IReadOnlyList<FileFormat> formats)
+    private Face BuildFace(IEnumerable<string> presetIds, IReadOnlyList<FileFormat> formats, IReadOnlySet<string> off)
     {
         var presets = presetIds
             .Select(store.FindPreset)
             .OfType<Preset>()
+            .Where(p => FormatFields.IsShown(p.TargetFormat, off))
             .ToList();
 
         var subPresets = presets
             .Select(p => (IReadOnlyList<Preset>)(p.IsGroup ? p.SubPresetIds : [])
                 .Select(store.FindPreset).OfType<Preset>().Where(c => !c.IsGroup).Take(Preset.MaxSubPresets).ToList())
             .ToList();
+
+        // Children are filtered after Take, so a hidden child doesn't let in one the group editor doesn't show. A group
+        // whose children were all hidden leaves the donut like a hidden slice; one that was empty already stays, greyed
+        // out as before. Both lists lose the same index: Items reads a group's children by its position.
+        for (var i = presets.Count - 1; i >= 0; i--)
+        {
+            var children = subPresets[i];
+            subPresets[i] = children.Where(p => FormatFields.IsShown(p.TargetFormat, off)).ToList();
+            if (presets[i].IsGroup && children.Count > 0 && subPresets[i].Count == 0)
+            {
+                presets.RemoveAt(i);
+                subPresets.RemoveAt(i);
+            }
+        }
 
         DonutItem ItemOf(Preset p, bool caption = true)
         {
@@ -331,8 +356,9 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
             {
                 Id = p.Id,
                 // On a group's ring the group's name gives the context: "Rotate" → Left / Right / 180°.
-                Label = caption ? loc.DisplayName(p) : loc.RingName(p),
+                Label = caption ? loc.DonutName(p) : loc.RingName(p),
                 Caption = !caption ? null
+                    : p.IsCopyToFolder ? loc[p.Output.MoveInsteadOfCopy ? "presets.move_to_folder" : "presets.copy_to_folder"]
                     : p.TargetFormat == BuiltInData.SameAsSource
                         ? string.Join("/", formats.Select(f => f.DisplayName).Take(2))
                         : FormatLabels.NameOf(loc, p.TargetFormat),

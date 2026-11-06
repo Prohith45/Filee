@@ -15,7 +15,9 @@ namespace Filee.Core.Settings;
     ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
     AllowTrailingCommas = true)]
 [JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(ThemeStyle))]
 [JsonSerializable(typeof(List<Preset>))]
+[JsonSerializable(typeof(TranslateOptions))]
 [JsonSerializable(typeof(List<ToolbarProfile>))]
 [JsonSerializable(typeof(PresetBundle))]
 [JsonSerializable(typeof(List<HistoryEntry>))]

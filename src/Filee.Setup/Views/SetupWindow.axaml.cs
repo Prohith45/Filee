@@ -118,6 +118,9 @@ public partial class SetupWindow : Window
             case nameof(SetupViewModel.OptionsOpen):
                 FocusPrimary();
                 break;
+            case nameof(SetupViewModel.SelectedLanguage):
+                Find<SlideShow>("Slides")?.RefreshTexts();
+                break;
         }
     }
 
@@ -138,12 +141,15 @@ public partial class SetupWindow : Window
     private T? Find<T>(string name) where T : Control =>
         State?.GetLogicalDescendants().OfType<T>().FirstOrDefault(c => c.Name == name);
 
-    /// <summary>The "What's new" slides on the progress card, fading in at each change.</summary>
+    /// <summary>
+    /// The "What's new" slides on the progress card, fading in at each change. Each shows its poster frame, not the
+    /// animation: an install is shorter than the clips, which were cut off midway. The app plays them in full.
+    /// </summary>
     private void ShowSlides()
     {
         if (!_model.ShowShowcase || _model.Deck is not { } deck || Find<SlideShow>("Slides") is not { } slides)
             return;
-        slides.PlayAnimations = SetupMotion.Enabled;
+        slides.PlayAnimations = false;
         if (SetupMotion.Enabled)
         {
             slides.Media.Transitions = [new DoubleTransition { Property = OpacityProperty, Duration = TimeSpan.FromMilliseconds(450) }];
@@ -153,7 +159,7 @@ public partial class SetupWindow : Window
                 Avalonia.Threading.Dispatcher.UIThread.Post(() => slides.Media.Opacity = 1, Avalonia.Threading.DispatcherPriority.Render);
             };
         }
-        slides.Show(deck.Slides, _model.Text);
+        slides.Show(deck.Slides, _model.Text, () => _model.SelectedLanguage.Code);
     }
 
     private void FocusPrimary()

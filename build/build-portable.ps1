@@ -2,10 +2,19 @@
 # disk image (Filee.app next to an Applications link, to drag it there), signed and notarized as the app is.
 #
 # Linux packages must run on Ubuntu 22.04 (glibc 2.35). rhwp's Linux release needs a newer glibc, so CI builds it from
-# source on Ubuntu 22.04 (build/build-linux-native.py) and passes it in:
-#   -RhwpOverride <dir>  a folder with the rhwp program (rhwp's release archive layout) used instead of the rhwp
-#                        download pinned in engines.json
+# source on Ubuntu 22.04 (build/build-native.py) and passes it in:
+#   -RhwpOverride <dir>     a folder with the rhwp program (rhwp's release archive layout) used instead of the rhwp
+#                           download pinned in engines.json
 # Without it (local builds) the package uses the download, which needs a newer glibc.
+# Unhwp's NuGet package has no linux-arm64 library; CI builds it the same way and passes it in:
+#   -UnhwpOverride <file>   libunhwp.so, put next to the app (dotnet publish -p:UnhwpNativeLibrary)
+# Without it a linux-arm64 package has no Unhwp (HWP/HWPX to text, Markdown and HTML).
+#
+# macOS packages must run on macOS 13 (LSMinimumSystemVersion). Magick.NET's own macOS ImageMagick library needs a
+# newer macOS, and Magick.NET 15 has none for Intel Macs, so the same Magick.Native release built for macOS 13
+# (.github/workflows/magick-native-macos.yml, pinned in build/fetch-magick-native.ps1) replaces it on Apple silicon and
+# is added on Intel. Every Mach-O file is then checked against LSMinimumSystemVersion (build/check-macho-minos.py)
+# before signing.
 [CmdletBinding()]
 param(
     [ValidateSet('linux-x64', 'linux-arm64', 'osx-x64', 'osx-arm64')][string]$Runtime,
@@ -13,7 +22,8 @@ param(
     [string]$OutputDir = (Join-Path $PSScriptRoot '../Releases'),
     [string]$SigningIdentity = '-',
     [switch]$SkipFonts,
-    [string]$RhwpOverride
+    [string]$RhwpOverride,
+    [string]$UnhwpOverride
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +38,15 @@ if (($Runtime.StartsWith('osx-') -and -not $IsMacOS) -or ($Runtime.StartsWith('l
 }
 if ($RhwpOverride -and -not $Runtime.StartsWith('linux-')) {
     throw '-RhwpOverride is for Linux packages.'
+}
+if ($UnhwpOverride -and $Runtime -ne 'linux-arm64') {
+    throw '-UnhwpOverride is for linux-arm64 packages (the others get the library from the Unhwp package).'
+}
+$native = @()
+if ($UnhwpOverride) {
+    $UnhwpOverride = (Resolve-Path -LiteralPath $UnhwpOverride).Path
+    if ((Split-Path $UnhwpOverride -Leaf) -ne 'libunhwp.so') { throw "-UnhwpOverride: $UnhwpOverride is not libunhwp.so." }
+    $native = @("-p:UnhwpNativeLibrary=$UnhwpOverride")
 }
 if ($RhwpOverride) {
     $RhwpOverride = (Resolve-Path -LiteralPath $RhwpOverride).Path
@@ -68,7 +87,7 @@ if (-not $SkipFonts) { & (Join-Path $PSScriptRoot 'fetch-fonts.ps1') }
 foreach ($project in @('Filee.App', 'Filee.Cli')) {
     Invoke-Checked "Publish $project" {
         dotnet publish (Join-Path $root "src/$project/$project.csproj") -c Release -r $Runtime --self-contained true `
-            "-p:Version=$Version" -p:FileeRelease=true -p:PublishReadyToRun=false -o $publish
+            "-p:Version=$Version" -p:FileeRelease=true -p:PublishReadyToRun=false @native -o $publish
     }
 }
 $engines = Join-Path $publish 'engines'
@@ -93,6 +112,17 @@ foreach ($notice in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
 }
 
 if ($Runtime.StartsWith('osx-')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $publish 'Magick.NET-Q8-AnyCPU.dll') -PathType Leaf)) {
+        throw 'Publish did not produce Magick.NET-Q8-AnyCPU.dll'
+    }
+    # Magick.NET 15 ships the Apple silicon library only: replaced there, added on Intel.
+    $library = Join-Path $publish "Magick.Native-Q8-$($Runtime.Substring(4)).dll.dylib"
+    if ($Runtime -eq 'osx-arm64' -and -not (Test-Path -LiteralPath $library -PathType Leaf)) {
+        throw "Publish did not produce $(Split-Path $library -Leaf)"
+    }
+    & (Join-Path $PSScriptRoot 'fetch-magick-native.ps1') -Runtime $Runtime -Destination $publish
+    Invoke-Checked 'Check minimum macOS' { python3 (Join-Path $PSScriptRoot 'check-macho-minos.py') $publish }
+
     $contents = Join-Path $appBundle 'Contents'
     $resources = Join-Path $contents 'Resources'
     New-Item -ItemType Directory -Path $resources | Out-Null
@@ -114,6 +144,9 @@ if ($Runtime.StartsWith('osx-')) {
     Invoke-Checked 'Create app icon' { iconutil -c icns $iconset -o (Join-Path $resources 'filee.icns') }
     # Translations of the service title ("Convert with Filee") in Finder's right-click menu.
     foreach ($localization in Get-ChildItem -LiteralPath (Join-Path $root 'installer/macos') -Directory -Filter '*.lproj') {
+        foreach ($stringsFile in Get-ChildItem -LiteralPath $localization.FullName -File -Filter '*.strings') {
+            Invoke-Checked 'Validate localized strings' { plutil -lint $stringsFile.FullName }
+        }
         Copy-Item -LiteralPath $localization.FullName -Destination $resources -Recurse
     }
     $entitlements = Join-Path $root 'installer/macos/entitlements.plist'
@@ -140,6 +173,8 @@ else {
     Copy-Item -LiteralPath (Join-Path $root 'installer/linux/uninstall.sh') -Destination $package
     Copy-Item -LiteralPath (Join-Path $root 'installer/linux/INSTALL.txt') -Destination $package
     Copy-Item -LiteralPath (Join-Path $root 'installer/linux/kwin') -Destination $package -Recurse
+    Copy-Item -LiteralPath (Join-Path $root 'installer/linux/gnome') -Destination $package -Recurse
+    Copy-Item -LiteralPath (Join-Path $root 'docs/GNOME-WAYLAND.md') -Destination $package
 }
 Invoke-Checked 'Installer permissions' { chmod +x (Join-Path $package 'install.sh') (Join-Path $package 'uninstall.sh') }
 $temporaryArchive = "$archive.$([Guid]::NewGuid().ToString('N')).partial"

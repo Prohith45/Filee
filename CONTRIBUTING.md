@@ -34,25 +34,30 @@ dotnet test Filee.slnx -c Release
 pwsh build/build-portable.ps1 -Runtime linux-x64
 ```
 
-Use the matching runtime on a Mac or ARM64 Linux machine. Packaging runs on Linux/macOS so archives retain
+Use the matching runtime on a Mac or ARM64 Linux machine. Magick.NET has no ImageMagick library for Intel Macs: there,
+put Filee's own next to each build after building, e.g.
+`pwsh build/fetch-magick-native.ps1 -Runtime osx-x64 -Destination src/Filee.App/bin/Debug/net10.0`. Packaging runs on Linux/macOS so archives retain
 executable permissions. Each archive contains the app, CLI, rhwp, 7-Zip, installation instructions and per-user
 install/uninstall scripts. `Filee-<version>-<rid>-SHA256SUMS.txt` verifies the archive. macOS bundles use
 `com.filee.app` and a development ad-hoc signature by default; public distribution still needs Developer ID signing
 and notarization. `-SigningIdentity` can supply a signing identity, but does not perform notarization.
 
 Linux release packages must run on Ubuntu 22.04 (glibc 2.35). CI builds rhwp from source on Ubuntu 22.04
-(`build/build-linux-native.py`) and passes it with `-RhwpOverride`; a local package without it needs the glibc of the
-machine that built it. Check a package with
+(`build/build-native.py`) and passes it with `-RhwpOverride` (and on ARM64 Unhwp's library with `-UnhwpOverride`); a
+local package without it needs the glibc of the machine that built it. Check a package with
 `python3 build/check-elf-glibc.py --max 2.35 <unpacked package>`. See [docs/ENGINES.md](docs/ENGINES.md#linux-builds-for-older-glibc).
 
-- **Linux:** drag gestures require X11. Install the Avalonia desktop dependencies (fontconfig, FreeType, X11,
+- **Linux:** drag gestures require X11 by default. Install the Avalonia desktop dependencies (fontconfig, FreeType, X11,
   Xrandr, Xi, Xtst, Xt, XkbCommon, ICE and SM) and CJK fonts for document comparisons. File actions are installed for
   Thunar, Nautilus, Nemo and Dolphin. The first enabled keyboard shortcut uses Thunar's native custom action;
   close Thunar before changing or pausing that shortcut and reopen it afterwards. Global selected-file queries
   and hold gestures are not supported. Wayland can use file actions, the drop zone, watch folders and CLI.
-  On KDE Plasma 6 the drag gesture can also run there, experimentally and only with `FILEE_WAYLAND_GESTURES=1`. It needs
-  the user in the `input` group (libuiohook's libinput back end) and the KWin script in `installer/linux/kwin`, which
-  moves the donut window (titled "Filee Donut") to the cursor. See `installer/linux/INSTALL.txt`.
+  On KDE Plasma 6 and Hyprland, the drag gesture can also run there, experimentally with `FILEE_WAYLAND_GESTURES=1`. It needs
+  the user in the `input` group (libuiohook's libinput back end) and a compositor positioning mechanism (the KWin script in
+  `installer/linux/kwin` or a Hyprland floating window rule). Native Wayland support (`Avalonia.Wayland`) is also available
+  as an opt-in via `FILEE_USE_WAYLAND=1`. See `installer/linux/INSTALL.txt`.
+  On GNOME Wayland, the bundled Shell extension supplies pointer state through a private Unix socket; no input
+  group is required. See [docs/GNOME-WAYLAND.md](docs/GNOME-WAYLAND.md) for setup, limits and troubleshooting.
 - **macOS:** grant Filee Accessibility permission for gestures and Finder Automation permission for selection.
   Keep the development `.app` at a stable path while testing these permissions. Finder integration is a Quick
   Action under Services; auto-start uses a per-user LaunchAgent.
@@ -75,6 +80,8 @@ keep macOS marked as a preview until it is notarized.
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. In short:
 
 - **New file format or engine** → `src/Filee.Engines`, see [docs/ADDING-A-CONVERTER.md](docs/ADDING-A-CONVERTER.md).
+  Which formats and tools are shown by default, and which new output formats come in, is in
+  [docs/FORMAT-RULES.md](docs/FORMAT-RULES.md).
 - **New language** → `src/Filee.App/Assets/i18n`, see [docs/ADDING-A-LANGUAGE.md](docs/ADDING-A-LANGUAGE.md).
 - **UI** → `src/Filee.App/Views` (XAML) + `ViewModels` (CommunityToolkit.Mvvm).
 - **Domain rules** (routes, output names, settings) → `src/Filee.Core` — no UI or OS code here.
@@ -122,8 +129,10 @@ pwsh build/sign-release.ps1 -Version X.Y.Z -CertificateThumbprint <sha1>
 ```
 
 It signs every unsigned program in the build and the Setup program, packs and signs `Filee-X.Y.Z-win-Setup.exe`, zips
-the portable copy, checks the signed Setup in a sandbox install and uploads the files with their SHA-256 sums. Look
-over the draft and publish it (or pass `-Publish`). `build/sign-windows.ps1` signs any folder or file on its own.
+the portable copy, checks the signed Setup in a sandbox install and uploads the files with their SHA-256 sums. It also
+copies them to the download mirror `https://dl.filee.sh/X.Y.Z/` (Cloudflare R2; needs `npx wrangler login` once),
+which the Microsoft Store listing points at because GitHub's download links redirect. Look over the draft and publish
+it (or pass `-Publish`). `build/sign-windows.ps1` signs any folder or file on its own.
 
 ### "What's new" slides for a release
 

@@ -13,6 +13,12 @@ public enum ThemeMode
     Dark,
 }
 
+public enum ThemeStyle
+{
+    Soft,
+    MaterialYou,
+}
+
 /// <summary>What closing the main window does (Settings → General).</summary>
 public enum CloseAction
 {
@@ -29,10 +35,15 @@ public enum CloseAction
 /// <summary>Look and feel.</summary>
 public sealed class ThemeSettings
 {
+    public ThemeStyle Style { get; set; } = ThemeStyle.Soft;
+
     public ThemeMode Mode { get; set; } = ThemeMode.System;
 
     /// <summary>Accent colour as <c>#RRGGBB</c>.</summary>
     public string Accent { get; set; } = "#7F77DD";
+
+    /// <summary>Active curated preset key (e.g. "mint", "peach") when a coordinated light/dark pair is used; null for custom choices.</summary>
+    public string? PresetKey { get; set; }
 
     /// <summary>Base corner radius in pixels. Larger = "softer" UI.</summary>
     public double CornerRadius { get; set; } = 16;
@@ -136,7 +147,7 @@ public sealed class DonutSettings
 public sealed class AppSettings
 {
     /// <summary>Current schema version. Increase when the format changes and add a migration.</summary>
-    public const int CurrentSchemaVersion = 39;
+    public const int CurrentSchemaVersion = 64;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
@@ -220,6 +231,9 @@ public sealed class AppSettings
     /// <summary>Set once the "Is Filee helping you?" card (GitHub star / feedback) has been shown.</summary>
     public bool FeedbackPromptShown { get; set; }
 
+    /// <summary>macOS: set once Filee has shown the system's Accessibility alert, which it shows only once (#316).</summary>
+    public bool AccessibilityPromptShown { get; set; }
+
     /// <summary>Folders whose new files are converted automatically (Settings → Watch folders).</summary>
     public List<Watching.WatchRule> WatchFolders { get; set; } = [];
 
@@ -247,6 +261,9 @@ public sealed class AppSettings
     /// </summary>
     public bool LibreOfficeForSlides { get; set; } = true;
 
+    /// <summary>Active local model for offline translation (e.g. "llama3.2", "qwen2.5").</summary>
+    public string? PreferredOllamaModel { get; set; }
+
     /// <summary>
     /// With LibreOffice and H2Orestart installed, HWP / HWPX → PDF go through it instead of rhwp: a way around a
     /// document rhwp lays out wrong (each engine gets different documents right).
@@ -270,6 +287,35 @@ public sealed class AppSettings
 
     /// <summary>Every geospatial conversion is saved as a ZIP, whatever the preset says (see <see cref="OutputRule.ZipResult"/>).</summary>
     public bool ZipGeoResults { get; set; }
+
+    /// <summary>
+    /// How large Filee's windows draw everything (Theme → Window size; Ctrl + mouse wheel, Ctrl + plus / minus, Ctrl + 0):
+    /// 1 as designed, 0.7 to 1.8. A missing value (settings from before it) reads as 1, so it needs no schema step.
+    /// </summary>
+    public double UiScale { get; set; } = 1;
+
+    /// <summary>
+    /// The main window's navigation is collapsed to an icon rail (the button at its bottom). A missing value (settings from
+    /// before it) reads as expanded, so it needs no schema step.
+    /// </summary>
+    public bool NavCollapsed { get; set; }
+
+    /// <summary>
+    /// Where the main window was when it last closed, so the next start opens it there (#586). Null until it has closed
+    /// once. A Filee from before it skips the property, so it needs no schema step.
+    /// </summary>
+    public WindowBounds? MainWindow { get; set; }
+
+    /// <summary>
+    /// The fields turned off on the Fields page (ids of <see cref="Formats.FormatFields.All"/>): a format that belongs only to
+    /// them is left out of the donut and the preset lists. An empty list and a missing value both mean every field is on, so
+    /// settings from before it read as every field on and need no schema step. A new install gets its defaults from
+    /// <see cref="UserDataStore.Load"/>.
+    /// </summary>
+    public List<string> TurnedOffFields { get; set; } = [];
+
+    /// <summary><see cref="TurnedOffFields"/> as a set that ignores case, for <see cref="Formats.FormatFields.IsShown"/>.</summary>
+    public IReadOnlySet<string> TurnedOffFieldSet() => TurnedOffFields.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Returns <paramref name="preset"/> itself, or a copy with the app-wide output settings applied: it saves to
@@ -314,6 +360,19 @@ internal sealed class IconPreferenceJsonConverter : JsonConverter<bool>
 
     public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options) =>
         writer.WriteBooleanValue(value);
+}
+
+/// <summary>
+/// A window's place (<see cref="AppSettings.MainWindow"/>): its top-left corner in screen pixels and its size in
+/// device-independent pixels, as Avalonia gives them; a part not known is null. Maximized keeps the size it had before.
+/// </summary>
+public sealed class WindowBounds
+{
+    public int? X { get; set; }
+    public int? Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
+    public bool Maximized { get; set; }
 }
 
 /// <summary>The save location presets set to "Default" use. Starts as "next to the source file", as before 1.4.</summary>

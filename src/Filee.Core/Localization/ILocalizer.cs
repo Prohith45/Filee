@@ -25,10 +25,36 @@ public interface ILocalizer
 /// <summary>Helpers that resolve user-facing names of presets and profiles.</summary>
 public static class LocalizerExtensions
 {
+    /// <summary>
+    /// A file's notice with why in brackets, the reason translated and the system's own words after it:
+    /// "The original was kept… (the file is open in another program)". A picture under the preset's minimum size adds
+    /// its own sentence, or is the notice on its own (<see cref="Conversion.FileResult.UnderMinimumSize"/>, #662).
+    /// </summary>
+    public static string Notice(this ILocalizer loc, Conversion.FileResult file)
+    {
+        if (file.NoticeKey is null)
+            return file.UnderMinimumSize ? loc["notice.under_min_size"] : string.Empty;
+        var why = file.NoticeReasonKey is { } key ? loc[key] : null;
+        if (!string.IsNullOrWhiteSpace(file.NoticeDetail))
+            why = why is null ? file.NoticeDetail : $"{why}: {file.NoticeDetail}";
+        var notice = why is null ? loc[file.NoticeKey] : $"{loc[file.NoticeKey]} ({why})";
+        return file.UnderMinimumSize ? loc.Format("notice.with_under_min_size", notice, loc["notice.under_min_size"]) : notice;
+    }
+
     public static string DisplayName(this ILocalizer loc, Preset preset) =>
         !string.IsNullOrWhiteSpace(preset.Name) ? preset.Name
         : preset.NameKey is not null ? loc[preset.NameKey]
         : preset.TargetFormat.ToUpperInvariant();
+
+    /// <summary>A compact name on the donut, where the target format is already shown underneath.</summary>
+    public static string DonutName(this ILocalizer loc, Preset preset)
+    {
+        if (!string.IsNullOrWhiteSpace(preset.Name) || preset.NameKey is null)
+            return loc.DisplayName(preset);
+        var key = preset.NameKey + ".donut";
+        var text = loc[key];
+        return text == key ? loc.DisplayName(preset) : text;
+    }
 
     /// <summary>
     /// The name on a slice of a group's ring, where the group's name already says what it is about: a built-in

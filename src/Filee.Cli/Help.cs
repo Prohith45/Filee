@@ -1,6 +1,7 @@
 // Usage text of the "filee" command.
 
 using System.Reflection;
+using Filee.Core.Watching;
 
 namespace Filee.Cli;
 
@@ -13,8 +14,11 @@ internal static class Help
     {
         "convert" => Convert,
         "watch" => Watch,
-        "formats" => "Usage: filee formats [<format>]\n\nLists every format, or what one format converts to.\n",
-        "presets" => "Usage: filee presets\n\nLists the presets saved in Filee (built-in and your own).\n",
+        "formats" => "Usage: filee formats [<format>] [--json]\n\nLists every format, or what one format converts to.\n" +
+                     "With --json, prints the same as JSON (for scripts and other programs).\n",
+        "presets" => "Usage: filee presets [--json]\n\nLists the presets saved in Filee (built-in and your own).\n" +
+                     "With --json, prints the same as JSON (for scripts and other programs).\n",
+        "engines" => Engines,
         _ => General,
     };
 
@@ -26,8 +30,10 @@ internal static class Help
           filee convert <files or folders...> --preset <preset> [options]
           filee convert <files or folders...> --target-size <size> [options]
           filee watch <folder> --to <format> [options]
-          filee formats [<format>]
-          filee presets
+          filee formats [<format>] [--json]
+          filee presets [--json]
+          filee engines [--json]
+          filee engines (install | remove) <engine> [--json]
           filee help [<command>]
           filee version
 
@@ -37,9 +43,29 @@ internal static class Help
           filee convert *.png --to webp --quality 80 -o converted
           filee convert D:\Scans --recursive --preset to-pdf
           filee watch D:\Inbox --to pdf --move-originals
+          filee engines install pandoc
 
-        Presets and engines are the ones in the Filee app. Exit codes: 0 all converted, 1 some failed,
-        2 wrong arguments or a missing input, 3 nothing to convert.
+        Presets and engines are the ones in the Filee app. Exit codes: 0 nothing failed (skipped
+        files included), 1 some failed or were cancelled, 2 wrong arguments or a missing input, 3 nothing to
+        convert.
+
+        """;
+
+    private const string Engines = """
+        Usage: filee engines [--json]
+               filee engines install <engine> [--json] [--quiet]
+               filee engines remove <engine> [--json] [--quiet]
+
+        Lists the optional engines of Settings → Engines (LibreOffice, Pandoc, FFmpeg, …), or installs or removes
+        one with the same download and checks as the app. 'remove' only removes what Filee downloaded; your own copy
+        and one found on this computer are left alone.
+
+        In the JSON of the list, "version" is the version Filee downloads, also for an engine whose status is
+        "owncopy" (your own copy or one found on this computer).
+
+        Options:
+              --json             Print the result as JSON; progress goes to stderr, one JSON object per line
+              --quiet            Print nothing but errors
 
         """;
 
@@ -54,6 +80,10 @@ internal static class Help
               --target-size <size> Reduce file to at most this size, e.g. 200kb, 1.5mb
           -o, --output <folder>    Save there instead of next to the sources
           -r, --recursive          Include sub folders
+              --sort <order>       The order files merge in: name, name-desc, modified, modified-desc, created or
+                                   created-desc (default: as given; a folder or wildcard as the file system lists it).
+                                   By name, each folder's files stay together, sub folders first. Where a file has
+                                   no creation date (some Linux file systems), created uses its change or modified date
           -q, --quality <1-100>    Image quality for JPG, WebP, AVIF, …
               --overwrite          Replace existing output files (default: add a number)
               --skip               Leave existing output files alone
@@ -64,7 +94,7 @@ internal static class Help
 
         """;
 
-    private const string Watch = """
+    private static string Watch => FormattableString.Invariant($"""
         Usage: filee watch <folder> (--to <format> | --preset <preset>) [options]
 
         Converts files that land in the folder until Ctrl+C. Files are converted once they are complete (no
@@ -77,10 +107,10 @@ internal static class Help
           -r, --recursive        Also watch sub folders (their files keep the sub folder in the output)
               --move-originals   Move converted sources to <folder>\originals; files already waiting are
                                  converted at start
-              --settle <seconds> How long a file must stay unchanged (default 2)
+              --settle <seconds> How long a file must stay unchanged (default {FolderWatcher.DefaultSettleTime.TotalSeconds})
               --keep-dates       Give converted files the created and modified dates of the originals
               --zip              Save the result of each file as one ZIP (a Shapefile's files together)
               --quiet            Print nothing but errors
 
-        """;
+        """);
 }

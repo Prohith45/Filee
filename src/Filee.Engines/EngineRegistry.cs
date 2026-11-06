@@ -15,6 +15,7 @@ using Filee.Engines.Infrastructure;
 using Filee.Engines.Magick;
 using Filee.Engines.Media;
 using Filee.Engines.Models3D;
+using Filee.Engines.Ocr;
 using Filee.Engines.Office;
 using Filee.Engines.Pdf;
 using Filee.Engines.Subtitles;
@@ -48,6 +49,7 @@ public static class EngineRegistry
         new SpreadsheetConverter(),
         new OoxmlConverter(),
         new HwpxConverter(),
+        new Translation.TranslatorConverter(loggers?.CreateLogger<Translation.TranslatorConverter>()),
         new ArchiveConverter(),
         new VectorConverter(),
         new IcnsConverter(),
@@ -55,17 +57,22 @@ public static class EngineRegistry
         new DocxWriterConverter(),
         new PdfTextConverter(),
         new PdfSlidesConverter(),
+        new PdfTablesConverter(),
         new EmlConverter(),
         new DataConverter(),
         new SubtitleConverter(),
         new WicImageConverter(),
+        new WhisperConverter(loggers?.CreateLogger<WhisperConverter>()),
         new FfmpegConverter(loggers?.CreateLogger<FfmpegConverter>()),
         new CadConverter(),
         new ModelConverter(),
+        new ImageTo3DConverter(),
         new GeoConverter(),
         new EbookConverter(),
         new PandocConverter(),
         new GhostscriptConverter(),
+        new VisionConverter(), // before Tesseract: a Mac's OCR step (Tesseract reads the languages Vision doesn't)
+        new TesseractConverter(),
         new CalibreConverter(),
         new LibreOfficeConverter(env, loggers?.CreateLogger<LibreOfficeConverter>()),
     ];

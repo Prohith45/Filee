@@ -68,9 +68,29 @@ public partial class App : Application
         var loc = AppHost.Get<LocalizationService>();
         loc.Attach(this);
         ApplySettings(store.Settings);
+        // Window zoom: set once here, not with the other settings, since the zoom saves itself (UiZoom) without
+        // raising SettingsChanged.
+        UiZoom.Configure(store.Settings.UiScale, scale =>
+        {
+            try
+            {
+                store.SaveUiScale(scale);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                log.LogWarning(ex, "Could not remember the window zoom");
+            }
+        });
         // Every engine's availability, checked once off the UI thread: the first donut or drop otherwise starts
         // every engine's check (FFmpeg -version, folder searches) on the UI thread and freezes it meanwhile.
-        _ = AppHost.Get<ConverterCatalog>().CheckInBackgroundAsync();
+        var catalog = AppHost.Get<ConverterCatalog>();
+        _ = catalog.CheckInBackgroundAsync();
+        Filee.Engines.Translation.TranslatorConverter.StatusChanged += () =>
+            Dispatcher.UIThread.Post(() =>
+            {
+                catalog.Refresh();
+                _ = catalog.CheckInBackgroundAsync();
+            });
 
         // Global gestures → donut toolbar
         var triggers = AppHost.Get<TriggerService>();
@@ -85,6 +105,15 @@ public partial class App : Application
             _selectionPending = true;
             try
             {
+                // A clipboard shortcut converts the clipboard only: with nothing convertible on it, it does nothing.
+                // Falling back to the file manager's selection would convert whatever is selected in a window in
+                // the background, from any app, for a shortcut set to Everywhere.
+                if (e.Gesture is { Clipboard: true })
+                {
+                    if (platform.SupportsClipboard)
+                        ShowForClipboard(radial, platform, e.X, e.Y, log);
+                    return;
+                }
                 var files = OperatingSystem.IsMacOS()
                     ? await Task.Run(platform.GetFileManagerSelection) : platform.GetFileManagerSelection();
                 if (files.Count > 0 && !store.Settings.Paused)
@@ -116,15 +145,18 @@ public partial class App : Application
             TransparentWindows.Watch(log);
         }
         // macOS: ask for Accessibility with the system's own alert when the user opened Filee (not at sign-in) and
-        // a drag gesture is on. The home page keeps a reminder until it is given. Asked once the main window is up:
-        // asked earlier, the alert ends up behind it.
-        if (OperatingSystem.IsMacOS() && triggers.NeedsPermission && !Program.Options.Background
+        // a drag gesture is on, once ever (see ShouldAskForPermission). The home page keeps a reminder until it is
+        // given. Asked once the main window is up: asked earlier, the alert ends up behind it.
+        if (OperatingSystem.IsMacOS() && !Program.Options.Background
             && platform is Filee.Platform.MacOS.MacOSPlatformServices mac
-            && store.Settings.Triggers.Any(t => t.Enabled && t.Kind == TriggerKind.Drag))
+            && TriggerService.ShouldAskForPermission(store.Settings, triggers.NeedsPermission))
             DispatcherTimer.RunOnce(() =>
             {
-                if (OperatingSystem.IsMacOS() && triggers.NeedsPermission)
-                    mac.RequestAccessibilityPermission();
+                if (!OperatingSystem.IsMacOS() || !TriggerService.ShouldAskForPermission(store.Settings, triggers.NeedsPermission))
+                    return;
+                store.Settings.AccessibilityPromptShown = true;
+                store.SaveSettings();
+                mac.RequestAccessibilityPermission();
             }, TimeSpan.FromSeconds(1.5));
 
         store.SettingsChanged += (_, _) => ApplySettings(store.Settings);
@@ -137,6 +169,9 @@ public partial class App : Application
         _ = Task.Run(() => Filee.Core.Web.WebDrop.DeleteStale(Filee.Core.Web.WebDrop.DefaultWorkRoot, TimeSpan.FromDays(1)));
         // Likewise the work folders of conversions that never got to clean up after themselves.
         _ = Task.Run(() => JobQueue.DeleteStaleWorkFolders(JobQueue.DefaultWorkRoot, TimeSpan.FromDays(1)));
+        // Leftover update workspaces from cancelled or failed in-app updates (Linux only).
+        if (OperatingSystem.IsLinux())
+            _ = Task.Run(() => UpdateService.DeleteStaleWorkspaces());
         // Once LibreOffice is installed: prepare its profiles while the user isn't converting yet.
         AppHost.Get<EngineDownloadService>().WarmUpInBackground(TimeSpan.FromSeconds(10));
 
@@ -147,11 +182,13 @@ public partial class App : Application
 
         desktop.Exit += (_, _) =>
         {
+            UiZoom.Flush();
             watchdog.Dispose();
             AppHost.Get<MemoryTrimmer>().Dispose();
             AppHost.Get<TriggerService>().Dispose();
             AppHost.Get<TrayService>().Dispose();
             AppHost.Get<WatchFolderService>().DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
+            Filee.App.ViewModels.OllamaModelManagerViewModel.StopFileeStartedServer();
         };
 
         // Before HandleCommandLine marks the first run complete: a fresh install gets no slides (an update by the
@@ -182,6 +219,44 @@ public partial class App : Application
             DispatcherTimer.RunOnce(() => AppHost.Get<WindowService>().ShowElevationNotice(), TimeSpan.FromSeconds(2));
     }
 
+    /// <summary>
+    /// Opens the donut for the files on the clipboard, else for its picture (a screenshot), which is saved when it
+    /// converts, like a picture from a browser, without keeping the original. The results go back on the clipboard.
+    /// With neither on the clipboard, nothing opens.
+    /// </summary>
+    private static void ShowForClipboard(RadialController radial, IPlatformServices platform, int x, int y, ILogger log)
+    {
+        ClipboardContent? content;
+        try
+        {
+            content = platform.ReadClipboard();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log.LogWarning(ex, "Could not read the clipboard");
+            return;
+        }
+        if (content is { Files.Count: > 0 })
+        {
+            radial.ShowForFiles(x, y, content.Files, toClipboard: true);
+            return;
+        }
+        if (content?.Picture is not { Length: > 0 } picture)
+        {
+            if (Throttle.TryEnter("empty-clipboard", out var held))
+                log.LogInformation("Nothing to convert on the clipboard{Held}", LogThrottle.HeldText(held));
+            return;
+        }
+        var name = $"Clipboard {DateTime.Now:yyyy-MM-dd HH.mm.ss}.{content.PictureExtension ?? "png"}";
+        var web = new Filee.Core.Web.WebDrop([Filee.Core.Web.WebDropItem.FromBytes(name, picture)], Filee.Core.Web.WebDrop.DefaultWorkRoot)
+        {
+            SaveOnlyConverted = true,
+        };
+        log.LogInformation("The clipboard shortcut opens the donut for a {Extension} picture of {Bytes} bytes",
+            content.PictureExtension, picture.Length);
+        radial.ShowForFiles(x, y, web.Placeholders, web: web, toClipboard: true);
+    }
+
     private void ListenForLaterLaunches(SingleInstance instance, ILogger log)
     {
         instance.ArgumentsReceived += args =>
@@ -200,6 +275,7 @@ public partial class App : Application
     private static void WatchForUpdates(UserDataStore store)
     {
         var updates = AppHost.Get<UpdateService>();
+        updates.RequestApplicationShutdown = Quit;
         // Required: the card every time Filee starts (UpdateFound fires once per run). Recommended: once per version.
         // Optional: no card, the sidebar button only. Frequent releases no longer ask every day.
         updates.UpdateFound += (_, version) =>
@@ -212,6 +288,9 @@ public partial class App : Application
             AppHost.Get<WindowService>().ShowUpdateNotice(version);
         };
         updates.UpdateFailed += async (_, _) => await AppHost.Get<WindowService>().ShowUpdateFailedAsync();
+        // The last run's update failed after Filee closed (Linux): the installer rolled back and started this copy.
+        if (updates.CheckPendingFailure(store.Directory))
+            Dispatcher.UIThread.Post(async () => await AppHost.Get<WindowService>().ShowUpdateRolledBackAsync(updates.LastFailureLogPath));
         updates.StartPeriodicChecks(() => store.Settings.CheckForUpdates, TimeSpan.FromSeconds(20));
         DispatcherTimer.RunOnce(() => NotifyEngineUpdates(store), TimeSpan.FromSeconds(25));
     }

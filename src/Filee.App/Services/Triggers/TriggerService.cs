@@ -20,20 +20,33 @@ public sealed class TriggerService : IDisposable
     private readonly ILogger<TriggerService> _log;
     private readonly GestureDetector _detector = new();
     private readonly string _ownProcess = Process.GetCurrentProcess().ProcessName;
-    private EventLoopGlobalHook? _hook;
+    private QueuedGlobalHook? _hook;
     private Thread? _hookThread;
-    private readonly Func<EventLoopGlobalHook> _createHook;
+    private readonly Func<QueuedGlobalHook> _createHook;
+    private GnomePointerBridge? _gnomeBridge;
+    private GnomePointerInput? _gnomeInput;
     private HashSet<string> _excluded = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>FILEE_TRACE_GESTURES=1 logs each mouse press and scope decision, to find why a gesture doesn't fire.</summary>
+    /// <summary>
+    /// FILEE_TRACE_GESTURES=1 logs each mouse press and scope decision, to find why a gesture doesn't fire, each
+    /// release with how far the mouse went while held, each drag gesture that fired and each time the gestures are set
+    /// again (a press waiting to become a drag is dropped then, #739), and on Windows each mouse move that reached
+    /// Filee late (a stuck cursor, #511).
+    /// </summary>
     private static readonly bool Trace = Environment.GetEnvironmentVariable("FILEE_TRACE_GESTURES") == "1";
 
+    /// <summary>A mouse move this late (ms) goes to the trace: the clock itself is only 16 ms exact.</summary>
+    private const long LateMove = 50;
+
+    // For the trace: where the last press was, and the held moves since it (the hook thread only).
+    private int _pressX, _pressY, _heldMoves, _farthest;
+
     public TriggerService(IPlatformServices platform, ILogger<TriggerService> log)
-        : this(platform, log, () => new EventLoopGlobalHook(useBackgroundThreadForEventLoop: true))
+        : this(platform, log, () => new QueuedGlobalHook())
     {
     }
 
-    internal TriggerService(IPlatformServices platform, ILogger<TriggerService> log, Func<EventLoopGlobalHook> createHook)
+    internal TriggerService(IPlatformServices platform, ILogger<TriggerService> log, Func<QueuedGlobalHook> createHook)
     {
         _platform = platform;
         _log = log;
@@ -41,7 +54,12 @@ public sealed class TriggerService : IDisposable
         _detector.SystemDragThreshold = platform.SystemDragThreshold;
         _detector.ScopeFilter = InScope;
 
-        _detector.DragStarted += (g, x, y) => Post(() => DragStarted?.Invoke(this, new GestureEventArgs(g, x, y)));
+        _detector.DragStarted += (g, x, y) =>
+        {
+            if (Trace)
+                _log.LogInformation("Trace: drag gesture {Gesture} fired at {X},{Y}", g.Kind, x, y);
+            Post(() => DragStarted?.Invoke(this, new GestureEventArgs(g, x, y)));
+        };
         _detector.DragEnded += (x, y) => Post(() => DragEnded?.Invoke(this, new GestureEventArgs(null, x, y)));
         _detector.HoldTriggered += (g, x, y) => Post(() => SelectionGesture?.Invoke(this, new GestureEventArgs(g, x, y)));
         _detector.KeyChordTriggered += (g, x, y) => Post(() => SelectionGesture?.Invoke(this, new GestureEventArgs(g, x, y)));
@@ -126,7 +144,10 @@ public sealed class TriggerService : IDisposable
     /// <summary>Last known cursor position (physical pixels).</summary>
     public (int X, int Y) LastCursor { get; private set; }
 
-    public bool IsRunning => _hook?.IsRunning == true;
+    public bool IsRunning => GnomeExtensionStatus == GnomeBridgeStatus.Connected || _hook?.IsRunning == true;
+
+    /// <summary>Where the GNOME Shell extension connection stands, or null when Filee doesn't use it.</summary>
+    internal GnomeBridgeStatus? GnomeExtensionStatus { get; private set; }
     public string? Error { get; private set; }
 
     /// <summary>
@@ -141,6 +162,8 @@ public sealed class TriggerService : IDisposable
 
     public void Apply(AppSettings settings)
     {
+        if (Trace)
+            _log.LogInformation("Trace: gestures set again ({Count})", settings.Triggers.Count(g => g.Enabled));
         _detector.Configure(settings.Triggers.Where(g => _platform.SupportsSelectionShortcut || g.Kind == TriggerKind.Drag).ToList());
         _detector.Paused = settings.Paused;
         _flipKey = settings.Donut.EffectiveFlipKey(settings.Triggers);
@@ -155,8 +178,24 @@ public sealed class TriggerService : IDisposable
 
     private Timer? _permissionWatch;
 
+    /// <summary>
+    /// macOS: whether to show the system's Accessibility alert: gestures wait for the permission, a drag gesture is
+    /// on, and Filee hasn't asked before. Once, not at every start (#316): after an update of the ad-hoc signed app,
+    /// the list can show Filee switched on while macOS still denies it, and the alert came back at every start. The
+    /// Home reminder stays until the permission is given and says to remove Filee from the list and add it again.
+    /// </summary>
+    internal static bool ShouldAskForPermission(AppSettings settings, bool needsPermission) =>
+        needsPermission && !settings.AccessibilityPromptShown
+        && settings.Triggers.Any(t => t.Enabled && t.Kind == TriggerKind.Drag);
+
     public void Start()
     {
+        if (OperatingSystem.IsLinux() && _platform is Filee.Platform.Linux.LinuxPlatformServices
+            && Filee.Platform.Linux.LinuxPlatformServices.UsesGnomePointerBridge)
+        {
+            StartGnomeBridge();
+            return;
+        }
         if (_hook is not null)
             return;
         if (!_platform.SupportsGlobalPointerGestures)
@@ -181,13 +220,17 @@ public sealed class TriggerService : IDisposable
             _hook.MousePressed += (_, e) =>
             {
                 if (Trace)
-                    _log.LogInformation("Trace: press {Button} at {X},{Y}, mask {Mask} = {Modifiers}", e.Data.Button, e.Data.X, e.Data.Y, e.RawEvent.Mask, Map(e.RawEvent.Mask));
+                    _log.LogInformation("Trace: press {Button} at {X},{Y}, mask {Mask} = {Modifiers}", e.Data.Button, e.Data.X, e.Data.Y, e.RawEvent.Mask, ModifiersOf(e.RawEvent.Mask));
                 var (x, y) = ButtonPoint(e);
-                _detector.MouseDown(Map(e.Data.Button), x, y, Map(e.RawEvent.Mask));
+                (_pressX, _pressY, _heldMoves, _farthest) = (x, y, 0, 0);
+                _detector.MouseDown(Map(e.Data.Button), x, y, ModifiersOf(e.RawEvent.Mask));
             };
             _hook.MouseReleased += (_, e) =>
             {
                 var (x, y) = ButtonPoint(e);
+                if (Trace)
+                    _log.LogInformation("Trace: release {Button} at {X},{Y} after {Moves} held move(s), at most {Farthest} px from the press",
+                        e.Data.Button, x, y, _heldMoves, _farthest);
                 _detector.MouseUp(Map(e.Data.Button), x, y);
             };
             _hook.MouseDragged += (_, e) => OnMove(e);
@@ -219,7 +262,8 @@ public sealed class TriggerService : IDisposable
                     NotifyStatus();
                 }
             })
-            { IsBackground = true, Name = "Filee global input" };
+            // Highest: Windows holds every mouse move until this thread has queued it (#511). It does nothing else.
+            { IsBackground = true, Name = "Filee global input", Priority = ThreadPriority.Highest };
             _hookThread.Start();
         }
         catch (Exception ex)
@@ -231,6 +275,53 @@ public sealed class TriggerService : IDisposable
             _hookThread = null;
             NotifyStatus();
         }
+    }
+
+    private void StartGnomeBridge()
+    {
+        if (_gnomeBridge is not null)
+            return;
+        Error = null;
+        LinuxBackendMissing = false;
+        if (GnomePointerBridge.SocketPath is not { } path)
+        {
+            // A GNOME Wayland session always sets it, so this stays in the log; the page shows gestures as stopped.
+            _log.LogWarning("GNOME pointer integration needs XDG_RUNTIME_DIR; drag gestures stay off");
+            NotifyStatus();
+            return;
+        }
+        GnomeExtensionStatus = GnomeBridgeStatus.Waiting;
+        _gnomeInput = new GnomePointerInput(_detector);
+        GnomePointerBridge? bridge = null;
+        bridge = new GnomePointerBridge(path, state => Post(() =>
+        {
+            if (!ReferenceEquals(_gnomeBridge, bridge))
+                return;
+            LastCursor = (state.X, state.Y);
+            if (OperatingSystem.IsLinux() && _platform is Filee.Platform.Linux.LinuxPlatformServices linux)
+            {
+                linux.GnomePointerProcess = state.Process;
+                linux.GnomePointerIsDesktop = state.Desktop;
+            }
+            _gnomeInput?.Apply(state);
+        }), status => Post(() =>
+        {
+            if (!ReferenceEquals(_gnomeBridge, bridge) || status == GnomeExtensionStatus)
+                return;
+            if (GnomeExtensionStatus == GnomeBridgeStatus.Connected)
+                _gnomeInput?.Reset(LastCursor.X, LastCursor.Y);
+            GnomeExtensionStatus = status;
+            if (status == GnomeBridgeStatus.VersionMismatch)
+                _log.LogWarning("GNOME pointer extension speaks another protocol version than this Filee ({Version}); " +
+                    "sign out and in to load the installed extension", GnomePointerState.ProtocolVersion);
+            else
+                _log.LogInformation("GNOME pointer extension {State}",
+                    status == GnomeBridgeStatus.Connected ? "connected" : "disconnected; waiting to reconnect");
+            NotifyStatus();
+        }));
+        _gnomeBridge = bridge;
+        _log.LogInformation("Waiting for the Filee GNOME pointer extension (no input-device permission required)");
+        NotifyStatus();
     }
 
     private void ReportFailure(Exception exception, string message)
@@ -258,9 +349,18 @@ public sealed class TriggerService : IDisposable
 
     private void OnMove(MouseHookEventArgs e)
     {
+        // How long Windows held the cursor for Filee (#511): the event's time is in Unix milliseconds there.
+        if (Trace && OperatingSystem.IsWindows()
+            && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (long)e.RawEvent.Time is > LateMove and var late)
+            _log.LogInformation("Trace: a mouse move reached Filee {Late} ms late", late);
         (_estX, _estY) = (e.Data.X, e.Data.Y);
         LastCursor = (e.Data.X, e.Data.Y);
-        _detector.MouseMove(e.Data.X, e.Data.Y, Map(e.RawEvent.Mask), HeldButton(e.RawEvent.Mask));
+        if (Trace && HeldButton(e.RawEvent.Mask) != TriggerMouseButton.None)
+        {
+            _heldMoves++;
+            _farthest = Math.Max(_farthest, Math.Max(Math.Abs(e.Data.X - _pressX), Math.Abs(e.Data.Y - _pressY)));
+        }
+        _detector.MouseMove(e.Data.X, e.Data.Y, MoveModifiers(e.RawEvent.Mask), HeldButton(e.RawEvent.Mask));
     }
 
     private void OnRelativeMove(MouseHookEventArgs e)
@@ -269,17 +369,20 @@ public sealed class TriggerService : IDisposable
         _estY += e.Data.Y;
         if (Trace && HeldButton(e.RawEvent.Mask) != TriggerMouseButton.None)
             _log.LogInformation("Trace: relative move {Dx},{Dy} -> {X},{Y}, mask {Mask}", e.Data.X, e.Data.Y, _estX, _estY, e.RawEvent.Mask);
-        _detector.MouseMove(_estX, _estY, Map(e.RawEvent.Mask), HeldButton(e.RawEvent.Mask));
+        _detector.MouseMove(_estX, _estY, MoveModifiers(e.RawEvent.Mask), HeldButton(e.RawEvent.Mask));
     }
 
     internal bool InScope(TriggerGesture gesture, int x, int y)
     {
-        var process = _platform.ProcessNameAt(x, y);
+        // A keyboard shortcut goes to the window in front, wherever the pointer is (over the taskbar, say: #450).
+        // Mouse gestures go by the window under the pointer.
+        var front = gesture.Kind == TriggerKind.KeyChord ? _platform.GetForegroundWindow() : null;
+        var process = front is null ? _platform.ProcessNameAt(x, y) : front.ProcessName;
         if (Trace)
-            _log.LogInformation("Trace: {Gesture} at {X},{Y} over {Process}", gesture.Kind, x, y, process ?? "(none)");
+            _log.LogInformation("Trace: {Gesture} at {X},{Y} {Where} {Process}", gesture.Kind, x, y, front is null ? "over" : "in front:", process ?? "(none)");
         if (process is not null && (string.Equals(process, _ownProcess, StringComparison.OrdinalIgnoreCase) || _excluded.Contains(process)))
             return false;
-        return gesture.Scope == TriggerScope.Anywhere || _platform.IsFileManagerAt(x, y)
+        return gesture.Scope == TriggerScope.Anywhere || (front?.IsFileManager ?? _platform.IsFileManagerAt(x, y))
                // A picture or link dragged out of a web page opens the donut like a file.
                || gesture.Kind == TriggerKind.Drag && WebBrowsers.IsBrowser(process);
     }
@@ -295,6 +398,15 @@ public sealed class TriggerService : IDisposable
         MouseButton.Button5 => TriggerMouseButton.X2,
         _ => TriggerMouseButton.None,
     };
+
+    /// <summary>
+    /// The modifiers a mouse event was made with: what the platform reports held (macOS, whose hook mask can lose them),
+    /// else the hook's mask. Only asked while it matters: at a press, and on moves with a button held.
+    /// </summary>
+    private ModifierKeys ModifiersOf(EventMask mask) => _platform.CurrentModifiers() ?? Map(mask);
+
+    // A move's modifiers only matter while a button is held (a modifier pressed after the button): not asked otherwise.
+    private ModifierKeys MoveModifiers(EventMask mask) => HeldButton(mask) == TriggerMouseButton.None ? Map(mask) : ModifiersOf(mask);
 
     internal static ModifierKeys Map(EventMask mask)
     {
@@ -346,6 +458,11 @@ public sealed class TriggerService : IDisposable
 
     public void Dispose()
     {
+        _gnomeBridge?.Dispose();
+        _gnomeBridge = null;
+        GnomeExtensionStatus = null;
+        _gnomeInput?.Reset(LastCursor.X, LastCursor.Y);
+        _gnomeInput = null;
         _permissionWatch?.Dispose();
         _permissionWatch = null;
         try

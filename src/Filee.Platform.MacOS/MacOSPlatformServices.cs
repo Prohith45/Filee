@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using Filee.Core.Platform;
+using Filee.Core.Settings;
 
 namespace Filee.Platform.MacOS;
 
@@ -32,10 +33,20 @@ public sealed class MacOSPlatformServices : IPlatformServices
 
     public string? LastSelectionError { get; private set; }
 
+    public TrashRefusal? MoveToTrash(string path) => NativeMethods.MoveToTrash(path);
+
+    public string? ShortcutTarget(string path) => NativeMethods.AliasTarget(path);
+
     public bool IsFileManagerAt(int x, int y) =>
         string.Equals(ProcessNameAt(x, y), "Finder", StringComparison.OrdinalIgnoreCase);
 
     public string? ProcessNameAt(int x, int y) => NativeMethods.ProcessNameAt(x, y);
+
+    // SharpHook's libuiohook rebuilds its modifier mask on every event with CGEventSourceKeyState, which answers "up" for
+    // held keys while another app holds Secure Input (Terminal's Secure Keyboard Entry, a password field): every press
+    // then looks modifier-free and no ⌥ / ⌘ gesture matches. The flags state stays right, as it does for AppKit's
+    // NSEvent.modifierFlags. Drop this once SharpHook reads the flags state itself.
+    public ModifierKeys? CurrentModifiers() => NativeMethods.CurrentModifiers();
 
     public IReadOnlyList<string> RunningAppNames() => IPlatformServices.AppNames(NativeMethods.WindowOwnerNames().ToList());
 
@@ -57,6 +68,12 @@ public sealed class MacOSPlatformServices : IPlatformServices
             throw new InvalidOperationException($"Could not read Finder selection. Allow Filee to control Finder in System Settings > Privacy & Security > Automation. {ex.Message}", ex);
         }
     }
+
+    public bool SupportsClipboard => true;
+
+    public ClipboardContent? ReadClipboard() => MacOSClipboard.Read();
+
+    public bool CopyToClipboard(IReadOnlyList<string> paths) => MacOSClipboard.Write(paths);
 
     // AppKit exposes no public system drag-distance preference; match its usual four-point threshold.
     public int SystemDragThreshold => 4;
@@ -117,6 +134,30 @@ public sealed class MacOSPlatformServices : IPlatformServices
     {
         if (windowHandle != 0)
             NativeMethods.RaiseTopmost(windowHandle);
+    }
+
+    /// <summary>Restores a topmost window's native class and style after it hides or before it closes.</summary>
+    public void RestoreWindow(nint windowHandle)
+    {
+        if (windowHandle != 0)
+            NativeMethods.RestoreWindow(windowHandle);
+    }
+
+    // The app the donut took the keyboard from (its process id), 0 for none.
+    private int _focusFrom;
+
+    public void RememberFrontApp()
+    {
+        var front = NativeMethods.FrontmostProcessId();
+        _focusFrom = front != Environment.ProcessId ? front : 0;
+    }
+
+    public void ReturnFocus()
+    {
+        var from = _focusFrom;
+        _focusFrom = 0;
+        if (from != 0 && NativeMethods.FrontmostProcessId() == Environment.ProcessId)
+            NativeMethods.ActivateProcess(from);
     }
 
     /// <summary>

@@ -67,6 +67,7 @@ public sealed class RadialController(
     private bool _converted;   // a conversion started from the files on the donut now
     private readonly HashSet<string> _formatRequestsOffered = new(StringComparer.OrdinalIgnoreCase);
     private WebDrop? _web;      // the browser drop the click-mode donut's files stand for, until a conversion takes it
+    private bool _toClipboard;  // the click-mode donut's files came from the clipboard: their results go back on it
 
     /// <summary>
     /// How long a drag that never brought files may keep the invisible window up, in case the button release is
@@ -88,6 +89,7 @@ public sealed class RadialController(
         ReleaseProgressToToast();
         _grace.Cancel();
         ReplaceWeb(null);
+        _toClipboard = false;
         var window = EnsureWindow();
         // A ring from an earlier conversion (finished or handed to the toast) must not keep this gesture's window up.
         window.DonutControl.LeaveProgressMode();
@@ -111,9 +113,11 @@ public sealed class RadialController(
     /// Opens the donut for known files (click mode). Shortcuts among them stand for the files they point to.
     /// <paramref name="forAnotherProcess"/>: the files came from a later launch or the Services menu, so on macOS the
     /// donut may lose focus once while Filee becomes the active app. <paramref name="web"/>: the files are placeholders
-    /// of this browser drop (the drop zone), which the donut now owns.
+    /// of this browser drop (the drop zone, a picture on the clipboard), which the donut now owns.
+    /// <paramref name="toClipboard"/>: the files came from the clipboard, and their results go back on it.
     /// </summary>
-    public void ShowForFiles(int x, int y, IReadOnlyList<string> files, bool forAnotherProcess = false, WebDrop? web = null)
+    public void ShowForFiles(int x, int y, IReadOnlyList<string> files, bool forAnotherProcess = false, WebDrop? web = null,
+        bool toClipboard = false)
     {
         if (web is null)
             files = platform.ResolveShortcuts(files);
@@ -124,6 +128,7 @@ public sealed class RadialController(
         }
         ReleaseProgressToToast();
         ReplaceWeb(web);
+        _toClipboard = toClipboard;
         if (forAnotherProcess && OperatingSystem.IsMacOS())
             _grace.Start();
         else
@@ -134,9 +139,10 @@ public sealed class RadialController(
         viewModel.Load(files, clickMode: true);
         viewModel.FitToThisDonut();
         window.DonutControl.AllowContextEdit = true;
+        // Set the initial pose before showing the reused window, avoiding a fully-open flash.
+        window.DonutControl.PlayOpenAnimation();
         PlaceAndShow(window, x, y, activate: true);
         WatchFlipKey();
-        window.DonutControl.PlayOpenAnimation();
     }
 
     /// <summary>The mouse button of the drag gesture was released somewhere.</summary>
@@ -182,6 +188,7 @@ public sealed class RadialController(
             _window.DonutControl.LeaveProgressMode();
         }
         _visible = false;
+        ReturnKeyboard();
         WatchFlipKey();
         _grace.Cancel();
         ReplaceWeb(null);
@@ -222,6 +229,27 @@ public sealed class RadialController(
         var window = new RadialWindow { DataContext = viewModel };
         var donut = window.DonutControl;
 
+        // macOS uses a panel while the donut is shown over a full-screen app. Restore its original window class
+        // after any hide and before Avalonia releases it at quit, including a quit while it is still visible (#805).
+        void RestoreNativeWindow() => platform.RestoreWindow(window.TryGetPlatformHandle()?.Handle ?? 0);
+        window.Closing += (_, _) => RestoreNativeWindow();
+        window.PropertyChanged += (_, change) =>
+        {
+            if (change.Property == RadialWindow.IsVisibleProperty && !change.GetNewValue<bool>())
+                RestoreNativeWindow();
+        };
+
+        // On native Wayland, hiding an xdg_toplevel surface causes the compositor to destroy its surface,
+        // and re-showing raises an InvalidOperationException. Track Closed to re-create on the next gesture.
+        if (Filee.Platform.Linux.WaylandSupport.NativeWaylandRequested)
+        {
+            window.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_window, window))
+                    _window = null;
+            };
+        }
+
         window.DragEntered += () => _dragReachedDonut = true;
         // Tells "the drag reached the donut but brought no files" apart, with what it brought (file promises, say).
         window.DragWithoutFiles += formats =>
@@ -236,6 +264,7 @@ public sealed class RadialController(
                 return;
             viewModel.Load(files, clickMode: false);
             donut.PlayOpenAnimation();
+            TakeKeyboard(window);
             WatchFlipKey();
         };
         window.Dropped += (hit, dropped) =>
@@ -253,11 +282,18 @@ public sealed class RadialController(
             }
         };
         // One line per drag, to tell "the drag never reached the donut" from "it did but nothing lit up" when someone
-        // reports a donut that doesn't react.
-        window.DragSummary += (events, hit, lit) =>
-            log.LogInformation("Drag over the donut: {Events} move event(s), ended on {Kind} {Index}, drawn lit {Lit:0.00}",
-                events, hit.Kind, hit.Index, lit);
+        // reports a donut that doesn't react, and a drop from a drag the system ended without one (#784).
+        window.DragSummary += (events, hit, lit, dropped) =>
+            log.LogInformation("Drag over the donut: {Events} move event(s), ended on {Kind} {Index}, drawn lit {Lit:0.00}{Drop}",
+                events, hit.Kind, hit.Index, lit, dropped ? "" : ", left without a drop");
         window.EscapePressed += () => Close();
+        // The flip key comes from the window while it has the keyboard, else from the hook (WatchFlipKey): followed by
+        // the value, which the Activated event may come before.
+        window.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == Avalonia.Controls.WindowBase.IsActiveProperty)
+                WatchFlipKey();
+        };
         window.Deactivated += (_, _) =>
         {
             if (!viewModel.IsClickMode || _editing)
@@ -276,15 +312,16 @@ public sealed class RadialController(
         };
 
         donut.ActiveIndexChanged += (_, index) => viewModel.ShowHint(index, donut.ActiveSubIndex, donut.IsCenterHot);
-        // Drag mode: the flip key, tools key and the wheel seen by the global hook (click mode gets them in the focused window).
+        // Drag mode: the flip key, tools key and the wheel seen by the global hook (click mode gets them in the focused window, and so
+        // does a drag-mode donut that has the keyboard: see TakeKeyboard).
         triggers.FlipKeyPressed += (_, _) =>
         {
-            if (FlipsFromHook)
+            if (HookFlipsKey)
                 donut.Flip();
         };
         triggers.ToolsKeyPressed += (_, _) =>
         {
-            if (FlipsFromHook)
+            if (HookFlipsKey)
                 donut.ShowTools();
         };
         triggers.FlipWheelTurned += (_, _) =>
@@ -318,17 +355,24 @@ public sealed class RadialController(
         var orphaned = web is null && files.Any(WebDrop.IsPlaceholder);
         if (viewModel.PresetAt(index, sub) is not { } preset || SourcesFor(preset, files) is not { Count: > 0 } sources || orphaned)
         {
+            // Said in the log, as a drop that closes the donut looks the same as one the system never delivered (#784).
+            log.LogInformation("The donut closed without converting: {Reason}",
+                viewModel.PresetAt(index, sub) is not { } slice ? $"no preset at slice {index}/{sub}"
+                : orphaned ? "the browser drop behind the files is gone"
+                : $"none of the {files.Count} file(s) fit preset {slice.Id}");
             web?.Dispose();
             Close();
             return;
         }
 
-        if (preset.IsTool)
+        if (preset.IsTool && !preset.IsCopyToFolder)
         {
+            log.LogInformation("Opening {Preset} for {Count} file(s)", preset.Id, sources.Count);
             var near = _window?.Position;
+            KeepKeyboard(); // for the tool's window
             Close(animate: false);
             if (web is null)
-                windows.ShowCropOverlay(sources, preset, near);
+                windows.ShowTool(sources, preset, near);
             else
                 _ = ShowToolForBrowserFilesAsync(web, preset, near);
             return;
@@ -338,21 +382,32 @@ public sealed class RadialController(
         {
             var near = _window?.Position;
             Close(animate: false);
-            _ = AskThenConvertAsync(sources, preset.Clone(), web, near);
+            _ = AskValueThenConvertAsync(sources, preset.Clone(), web, near);
             return;
         }
 
-        // Merged PDFs, joined clips and slideshows follow the order the user picks.
-        if ((preset.TargetFormat == "pdf" && preset.Pdf.MergeIntoSingle || preset.JoinsIntoOneMedia) && sources.Count > 1)
+        // Merged PDFs, joined clips, slideshows and merged pictures follow the order the user picks.
+        if ((preset.TargetFormat == "pdf" && preset.Pdf.MergeIntoSingle || preset.JoinsIntoOneMedia || preset.JoinsImages) && sources.Count > 1)
         {
+            KeepKeyboard(); // for the order window
             Close(animate: false);
-            _ = MergeInOrderAsync(sources, preset.Clone(), web);
+            _ = MergeInOrderAsync(sources, preset.Clone(), web, _toClipboard);
             return;
         }
 
-        log.LogInformation("Converting {Count} file(s) with preset {Preset}{Web}", sources.Count, preset.Id,
-            web is null ? "" : " (from a browser)");
-        var job = conversions.Start(sources, preset, showInToast: false, web);
+        // "Ask every time" (#521): the save dialog first; the toast shows the job, the donut has closed for the dialog.
+        // shortcut: files from a browser aren't asked about, they save into the download folder as "next to the source".
+        if (preset.Output.AskEveryTime && (web is null || preset.IsCopyToFolder))
+        {
+            KeepKeyboard(); // for the save dialog
+            Close(animate: false);
+            _ = AskThenConvertAsync(sources, preset, _toClipboard, web);
+            return;
+        }
+
+        log.LogInformation("Converting {Count} file(s) with preset {Preset}{Web}{Clipboard}", sources.Count, preset.Id,
+            web is null ? "" : " (from a browser)", _toClipboard ? " (from the clipboard)" : "");
+        var job = conversions.Start(sources, preset, showInToast: false, web, _toClipboard);
         if (job is null || _window is null)
         {
             Close();
@@ -360,22 +415,27 @@ public sealed class RadialController(
         }
         _converted = true;
         ShowProgress(job);
+        ReturnKeyboard(); // the ring shows the conversion; nothing here needs the keyboard any more
     }
 
-    private async Task MergeInOrderAsync(IReadOnlyList<string> files, Preset preset, WebDrop? web)
+    private async Task MergeInOrderAsync(IReadOnlyList<string> files, Preset preset, WebDrop? web, bool toClipboard)
     {
         try
         {
-            var ordered = await windows.ChooseMergeOrderAsync(files);
-            if (ordered is not null)
+            var ordered = await windows.ChooseMergeOrderAsync(files, preset);
+            if (ordered is not null && preset.JoinsImages)
+                RememberMergeLayout(preset);
+            if (ordered is not null && preset.Output.AskEveryTime && web is null)
+                await AskThenConvertAsync(ordered, preset, toClipboard);
+            else if (ordered is not null)
             {
-                conversions.Start(ordered, preset, web: web);
+                conversions.Start(ordered, preset, web: web, toClipboard: toClipboard);
                 web = null; // the conversion owns the browser drop now
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            log.LogError(ex, "Could not start the ordered PDF merge");
+            log.LogError(ex, "Could not start the ordered merge");
         }
         finally
         {
@@ -383,7 +443,7 @@ public sealed class RadialController(
         }
     }
 
-    private async Task AskThenConvertAsync(IReadOnlyList<string> sources, Preset preset, WebDrop? web, PixelPoint? near)
+    private async Task AskValueThenConvertAsync(IReadOnlyList<string> sources, Preset preset, WebDrop? web, PixelPoint? near)
     {
         try
         {
@@ -412,13 +472,50 @@ public sealed class RadialController(
         }
     }
 
-    /// <summary>The crop tool on files from a browser: they are saved first, then it opens on them.</summary>
+    /// <summary>
+    /// "Merge images": the layout chosen in the merge order window (<paramref name="chosen"/>, a copy of the preset)
+    /// goes into the preset as saved, so the window opens with it next time.
+    /// </summary>
+    private void RememberMergeLayout(Preset chosen)
+    {
+        if (store.FindPreset(chosen.Id) is not { JoinsImages: true } saved)
+            return;
+        var image = saved.Image;
+        if (image.JoinDirection == chosen.Image.JoinDirection && image.JoinFit == chosen.Image.JoinFit
+            && image.JoinGap == chosen.Image.JoinGap && image.JoinBackground == chosen.Image.JoinBackground)
+            return;
+        image.JoinDirection = chosen.Image.JoinDirection;
+        image.JoinFit = chosen.Image.JoinFit;
+        image.JoinGap = chosen.Image.JoinGap;
+        image.JoinBackground = chosen.Image.JoinBackground;
+        try
+        {
+            store.SaveLibrary();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log.LogWarning(ex, "Could not remember the layout of merged pictures");
+        }
+    }
+
+    private async Task AskThenConvertAsync(IReadOnlyList<string> sources, Preset preset, bool toClipboard, WebDrop? web = null)
+    {
+        try
+        {
+            await conversions.AskThenStartAsync(sources, preset, web,
+                (running, one) => windows.AskSaveLocationAsync(sources, running, one), toClipboard);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log.LogError(ex, "Could not ask where to save");
+        }
+    }
     private async Task ShowToolForBrowserFilesAsync(WebDrop web, Filee.Core.Presets.Preset preset, PixelPoint? near)
     {
         var files = await conversions.SaveBrowserFilesAsync(web, (placeholder, ex) =>
             log.LogWarning(ex, "Saving {File} from a browser for {Preset} failed", Path.GetFileName(placeholder), preset.Id));
         if (files.Count > 0)
-            windows.ShowCropOverlay(files, preset, near);
+            windows.ShowTool(files, preset, near);
     }
 
     /// <summary>
@@ -426,7 +523,7 @@ public sealed class RadialController(
     /// archive"; any other preset converts the files beside them (issue #186).
     /// </summary>
     internal static IReadOnlyList<string> SourcesFor(Preset preset, IReadOnlyList<string> files) =>
-        preset.PacksIntoOneArchive ? files : [.. files.Where(path => !Directory.Exists(path))];
+        preset.PacksIntoOneArchive || preset.IsCopyToFolder ? files : [.. files.Where(path => !Directory.Exists(path))];
 
     // ───────── Progress ring ─────────
 
@@ -510,6 +607,7 @@ public sealed class RadialController(
     private void HideWindow()
     {
         _visible = false;
+        ReturnKeyboard();
         WatchFlipKey();
         _window?.DonutControl.CollapseGroup();
         _window?.Hide();
@@ -541,10 +639,53 @@ public sealed class RadialController(
     /// Has the global hook report the flip key and the wheel only while a drag-mode donut shows files that could flip;
     /// they are left alone otherwise (see <see cref="TriggerService.WatchFlipKey"/>).
     /// </summary>
-    private void WatchFlipKey() => triggers.WatchFlipKey = FlipsFromHook;
+    private void WatchFlipKey()
+    {
+        triggers.WatchFlipKey = FlipsFromHook;
+        // One source per press (#504): the window while it has the keyboard (click mode, or a drag-mode donut that took
+        // it), else the hook.
+        if (_window is not null)
+            _window.DonutControl.FlipKeyFromHook = HookFlipsKey;
+    }
 
     /// <summary>A drag-mode donut shows files and nothing was dropped yet: the hook's flip key and wheel flip it.</summary>
     private bool FlipsFromHook => _visible && !_dropped && !viewModel.IsClickMode && viewModel.HasFiles;
+
+    /// <summary>The hook's flip key flips the donut: in drag mode, while its window doesn't have the keyboard.</summary>
+    private bool HookFlipsKey => FlipsFromHook && _window?.IsActive != true;
+
+    // The donut took the keyboard during a drag (TakeKeyboard) and hasn't given it back yet.
+    private bool _tookKeyboard;
+
+    /// <summary>
+    /// macOS: once files are dragged onto the donut, it takes the keyboard (Filee comes to the front), so the flip key
+    /// reaches its window as a key press like any other. Watched from outside by the global hook it may not: while an
+    /// app holds Secure Input (Terminal with Secure Keyboard Entry, which can keep it from the background) macOS
+    /// gives no keys to anything watching, only to the app in front. The drag carries on; the keyboard goes back to the
+    /// app that had it once the conversion starts or the donut closes (<see cref="ReturnKeyboard"/>), and stays with
+    /// Filee when the drop opens a window of its own: a tool, the merge order, the save dialog (<see cref="KeepKeyboard"/>).
+    /// Not on Windows, where a window taking the keyboard during a drag breaks Explorer's drag.
+    /// </summary>
+    private void TakeKeyboard(RadialWindow window)
+    {
+        if (!OperatingSystem.IsMacOS() || _tookKeyboard || window.IsActive)
+            return;
+        platform.RememberFrontApp();
+        _tookKeyboard = true;
+        window.Activate();
+    }
+
+    /// <summary>The drop opens a window of Filee's own: the keyboard stays with Filee for it, not given back on close.</summary>
+    private void KeepKeyboard() => _tookKeyboard = false;
+
+    /// <summary>Gives the keyboard back to the app the donut took it from, if the donut still has it.</summary>
+    private void ReturnKeyboard()
+    {
+        if (!_tookKeyboard)
+            return;
+        _tookKeyboard = false;
+        platform.ReturnFocus();
+    }
 
     /// <summary>
     /// Top-left corner of a <paramref name="sidePx"/> square window centred on <paramref name="cursor"/>, moved into
@@ -591,7 +732,13 @@ public sealed class RadialController(
         }
         _visible = true;
         if (activate)
+        {
             window.Activate();
+            // ShowActivated is false because the same window is also used during an OS drag, where taking focus would
+            // break Explorer's drag. Click mode is different: the donut owns the keyboard until it closes, so focus it
+            // explicitly for Tab/arrow/Enter handling.
+            window.DonutControl.Focus();
+        }
     }
 
     private static bool SameFiles(IReadOnlyList<string> a, IReadOnlyList<string> b) =>

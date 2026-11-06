@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Filee.App.Services;
+using Filee.Core.Formats;
 
 namespace Filee.App.Tests;
 
@@ -43,6 +44,33 @@ public partial class LocalizationTests
 
     [Theory]
     [MemberData(nameof(Languages))]
+    public void Catalogs_have_no_duplicate_keys_or_empty_translations(string code)
+    {
+        using var json = JsonDocument.Parse(File.ReadAllText(Path.Combine(I18nDirectory, code + ".json")));
+        var entries = json.RootElement.EnumerateObject().ToList();
+        Assert.Equal(entries.Count, entries.Select(e => e.Name).Distinct().Count());
+        Assert.All(entries, e => Assert.False(string.IsNullOrWhiteSpace(e.Value.GetString()), $"{code}:{e.Name}"));
+    }
+
+
+    [Fact]
+    public void The_flip_hint_leaves_its_arrow_to_the_donut()
+    {
+        // The hub draws the arrow itself (#554): as a character, fonts without "↻" (Linux's bundled Noto Sans) showed
+        // a box. The key stays first, so every language still reads "Tab back".
+        foreach (var code in LocalizationService.Languages.Select(l => l.Code))
+        {
+            var strings = Load(code);
+            foreach (var key in new[] { "donut.flip_to_back", "donut.flip_to_front" })
+            {
+                Assert.DoesNotContain("↻", strings[key]);
+                Assert.StartsWith("{0} ", strings[key]);
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Languages))]
     public void Every_language_has_exactly_the_english_keys(string code)
     {
         var english = Load("en").Keys.ToHashSet();
@@ -50,6 +78,66 @@ public partial class LocalizationTests
 
         Assert.Empty(english.Except(other));
         Assert.Empty(other.Except(english));
+    }
+
+    [Fact]
+    public void Toolbar_tabs_and_reused_categories_exist_in_every_language()
+    {
+        string[] required =
+        [
+            "toolbar.tab.all",
+            "toolbar.tab.media",
+            "toolbar.tab.edit",
+            "toolbar.tab.model3d_cad",
+            "format.category.Image",
+            "format.category.Document",
+            "format.category.Geo",
+            "format.category.Archive",
+            "format.category.Font"
+        ];
+
+        foreach (var language in LocalizationService.Languages)
+        {
+            var translations = Load(language.Code);
+            foreach (var key in required)
+            {
+                Assert.True(translations.TryGetValue(key, out var value), $"{language.Code}:{key} is missing");
+                Assert.False(string.IsNullOrWhiteSpace(value), $"{language.Code}:{key} is empty");
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Languages))]
+    public void Line_breaks_are_real_line_breaks(string code)
+    {
+        // "\\n" in the JSON is a backslash and an n on screen; English writes "\n".
+        foreach (var (key, value) in Load(code))
+            Assert.False(value.Contains("\\n"), $"{code}:{key} has a literal \\n");
+    }
+
+    [Fact]
+    public void Field_switch_texts_exist_in_every_language()
+    {
+        string[] required =
+        [
+            "nav.fields",
+            "fields.title",
+            "fields.description",
+            "fields.formats",
+            "fields.always_shown",
+            "presets.target_hidden",
+            .. FormatFields.All.Where(f => f.CanTurnOff).Select(f => $"fields.name.{f.Id}")
+        ];
+        foreach (var language in LocalizationService.Languages)
+        {
+            var translations = Load(language.Code);
+            foreach (var key in required)
+            {
+                Assert.True(translations.TryGetValue(key, out var value), $"{language.Code}:{key} is missing");
+                Assert.False(string.IsNullOrWhiteSpace(value), $"{language.Code}:{key} is empty");
+            }
+        }
     }
 
     [Theory]
@@ -86,12 +174,16 @@ public partial class LocalizationTests
     }
 
     [Theory]
+    [InlineData("tr", "tr")]
+    [InlineData("tr-TR", "tr")]
+    [InlineData("TR-cy", "tr")]
+    [InlineData("tru", "en")]
     [InlineData("ru-RU", "ru")]
     [InlineData("en-US", "en")]
     [InlineData("pl-PL", "pl")]
     [InlineData("ar-EG", "ar")]
     [InlineData("pt-BR", "pt-BR")]
-    [InlineData("pt-PT", "pt-BR")]
+    [InlineData("pt-PT", "pt-PT")]
     [InlineData("zh-CN", "zh-CN")]
     [InlineData("zh-Hans-CN", "zh-CN")]
     [InlineData("zh-SG", "zh-CN")]
@@ -109,16 +201,37 @@ public partial class LocalizationTests
     [InlineData("new-NP", "en")]
     [InlineData("th-TH", "th")]
     [InlineData("thl-NP", "en")]
-    [InlineData("de-DE", "en")]
+    [InlineData("de-DE", "de")]
+    [InlineData("de-AT", "de")]
+    [InlineData("de-CH", "de")]
+    [InlineData("de", "de")]
+    [InlineData("den-CA", "en")]
+    [InlineData("it-IT", "it")]
+    [InlineData("it-CH", "it")]
+    [InlineData("it", "it")]
+    [InlineData("itl-RU", "en")]
+    [InlineData("id-ID", "id")]
+    [InlineData("id", "id")]
+    [InlineData("idu-NG", "en")]
+    [InlineData("vi-VN", "vi")]
+    [InlineData("vi", "vi")]
+    [InlineData("vin-TZ", "en")]
+    [InlineData("sv-SE", "en")]
     [InlineData("", "en")] // Linux without LANG: the invariant culture
     public void Auto_follows_the_language_the_user_reads_the_os_in(string os, string expected) =>
         Assert.Equal(expected, LocalizationService.Resolve("auto", () => os));
 
     [Theory]
     [InlineData("ko")]
+    [InlineData("de")]
+    [InlineData("it")]
+    [InlineData("id")]
+    [InlineData("vi")]
     [InlineData("ar")]
     [InlineData("ne")]
     [InlineData("en")]
+    [InlineData("pt-PT")]
+    [InlineData("pt-BR")]
     public void A_chosen_language_is_kept_whatever_the_os_is_in(string chosen) =>
         // The OS isn't even asked: the user picked the language in Settings.
         Assert.Equal(chosen, LocalizationService.Resolve(chosen, () => throw new InvalidOperationException("asked the OS")));
@@ -149,10 +262,45 @@ public partial class LocalizationTests
     }
 
     [Fact]
+    public void Turkish_is_offered_under_its_own_name()
+    {
+        Assert.Contains(("tr", "Türkçe"), LocalizationService.Languages);
+        Assert.Equal("tr", LocalizationService.Resolve("TR"));
+    }
+
+    [Fact]
     public void Japanese_is_offered_under_its_own_name()
     {
         Assert.Contains(("ja", "日本語"), LocalizationService.Languages);
         Assert.Equal("ja", LocalizationService.Resolve("JA"));
+    }
+
+    [Fact]
+    public void German_is_offered_under_its_own_name()
+    {
+        Assert.Contains(("de", "Deutsch"), LocalizationService.Languages);
+        Assert.Equal("de", LocalizationService.Resolve("DE"));
+    }
+
+    [Fact]
+    public void Italian_is_offered_under_its_own_name()
+    {
+        Assert.Contains(("it", "Italiano"), LocalizationService.Languages);
+        Assert.Equal("it", LocalizationService.Resolve("IT"));
+    }
+
+    [Fact]
+    public void Indonesian_is_offered_under_its_own_name()
+    {
+        Assert.Contains(("id", "Bahasa Indonesia"), LocalizationService.Languages);
+        Assert.Equal("id", LocalizationService.Resolve("ID"));
+    }
+
+    [Fact]
+    public void Vietnamese_is_offered_under_its_own_name()
+    {
+        Assert.Contains(("vi", "Tiếng Việt"), LocalizationService.Languages);
+        Assert.Equal("vi", LocalizationService.Resolve("VI"));
     }
 
     [Fact]

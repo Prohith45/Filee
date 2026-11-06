@@ -39,6 +39,7 @@ public class SetupWindowTests
         public bool? DeletedSettings { get; private set; }
         public InstallResult Result { get; set; } = new(new LaunchRequest(@"C:\Program Files\Filee\Filee.exe", "--background"), []);
         public TaskCompletionSource? Hold { get; set; }
+        public int DeletedAtRestart { get; set; }
 
         public InstallResult Install(InstallChoices choices, IProgress<SetupProgress> progress)
         {
@@ -48,10 +49,10 @@ public class SetupWindowTests
             return Result;
         }
 
-        public Exception? Uninstall(bool deleteSettings, IProgress<SetupProgress> progress)
+        public UninstallResult Uninstall(bool deleteSettings, IProgress<SetupProgress> progress)
         {
             DeletedSettings = deleteSettings;
-            return null;
+            return new UninstallResult(DeletedAtRestart: DeletedAtRestart);
         }
     }
 
@@ -107,7 +108,23 @@ public class SetupWindowTests
         Assert.Equal(62, model.Percent);
         var slides = window.GetVisualDescendants().OfType<SlideShow>().Single();
         Assert.True(slides.IsEffectivelyVisible);
+        // A busy runner can pass the six-second interval while pumping layout. Freeze the
+        // showcase and select the known slide before checking its language-specific media.
+        slides.AutoAdvance = null;
+        slides.GoTo(0);
+        Pump();
         Assert.Equal(model.Deck!.Slides.Count, slides.Slides.Count);
+        Assert.Equal(model.Deck.Slides[0].MediaFor(language).Source, slides.Media.Source);
+        Assert.True(slides.Media.HasPicture);
+        if (language is "pt-PT" or "pt-BR")
+        {
+            // Browser and flip keep the complete shared desktop interaction; crop uses its own Portuguese media.
+            Assert.Equal(model.Deck.Slides[0].Media, slides.Media.Source);
+            slides.GoTo(3);
+            Pump();
+            Assert.Contains($"/{language}/crop.webp", slides.Media.Source!.AbsolutePath);
+            Assert.Equal(model.Deck.Slides[3].MediaFor(language).PosterFrame, slides.Media.PosterFrame);
+        }
         Check(window, $"setup-3-installing-{language}.png");
 
         runner.Result = new InstallResult(new LaunchRequest(@"C:\Program Files\Filee\Filee.exe", "--install-engines=pandoc"),
@@ -127,7 +144,7 @@ public class SetupWindowTests
         try
         {
             app.RequestedThemeVariant = ThemeVariant.Dark;
-            foreach (var language in new[] { "en", "ko", "ru", "ar" })
+            foreach (var language in new[] { "en", "ko", "ru", "ar", "pt-PT", "pt-BR" })
             {
                 var (model, _, runner) = Model(language);
                 var window = Show(model);
@@ -158,7 +175,7 @@ public class SetupWindowTests
     [AvaloniaFact]
     public async Task Updates_and_failures_render()
     {
-        foreach (var language in new[] { "en", "ko", "ru", "ar" })
+        foreach (var language in new[] { "en", "ko", "ru", "ar", "pt-PT", "pt-BR" })
         {
             var (model, texts, runner) = Model(language, update: true);
             var window = Show(model);
@@ -179,7 +196,7 @@ public class SetupWindowTests
     [AvaloniaFact]
     public async Task Uninstall_renders_and_keeps_the_settings_by_default()
     {
-        foreach (var language in new[] { "en", "ko", "ru", "zh-CN", "ar" })
+        foreach (var language in new[] { "en", "ko", "ru", "zh-CN", "ar", "pt-PT", "pt-BR" })
         {
             var (model, _, runner) = Model(language, uninstall: true);
             var window = Show(model);
@@ -195,6 +212,20 @@ public class SetupWindowTests
             Check(window, $"uninstall-2-done-{language}.png");
             window.Close();
         }
+    }
+
+    [AvaloniaFact]
+    public async Task Uninstall_says_files_in_use_go_at_the_next_restart()
+    {
+        // Issue #519: files still in use are deleted at the next restart, and the message said nothing about them.
+        var (model, texts, runner) = Model("en", uninstall: true);
+        runner.DeletedAtRestart = 2;
+        await model.UninstallAsync();
+        Assert.Contains(texts["installer.uninstall.restart"], model.UninstalledText);
+
+        var (plain, _, _) = Model("en", uninstall: true);
+        await plain.UninstallAsync();
+        Assert.DoesNotContain(texts["installer.uninstall.restart"], plain.UninstalledText);
     }
 
     [AvaloniaFact]

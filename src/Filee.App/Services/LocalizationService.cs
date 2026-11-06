@@ -71,9 +71,11 @@ public sealed class LocalizationService : ILocalizer
         CultureInfo.CurrentUICulture = culture;
         CultureInfo.DefaultThreadCurrentUICulture = culture;
 
-        // Every key is published (English fallback for missing translations) so DynamicResource never breaks.
-        foreach (var key in _english.Keys.Concat(_current.Keys).Distinct())
-            _resources[key] = this[key];
+        // Every key is published (English fallback for missing translations) so DynamicResource never breaks. All in
+        // one SetItems: setting the keys one by one raises a resource change per key, and each reaches every control of
+        // every window still alive.
+        _resources.SetItems(_english.Keys.Concat(_current.Keys).Distinct()
+            .Select(key => new KeyValuePair<object, object?>(key, this[key])));
 
         _initialized = true;
         LanguageChanged?.Invoke(this, EventArgs.Empty);
@@ -106,6 +108,21 @@ public sealed class LocalizationService : ILocalizer
             return Languages.First(l => l.Code.Equals(setting, StringComparison.OrdinalIgnoreCase)).Code;
 
         var ui = osLanguage();
+        if (ui.Equals("de", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("de-", StringComparison.OrdinalIgnoreCase))
+            return "de";
+        // "it" and every region ("it-IT", "it-CH", …), but not Itelmen "itl".
+        if (ui.Equals("it", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("it-", StringComparison.OrdinalIgnoreCase))
+            return "it";
+        // "id" and "id-ID", but not Idoma "idu" or other codes starting with "id".
+        if (ui.Equals("id", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("id-", StringComparison.OrdinalIgnoreCase))
+            return "id";
+        // "vi" and "vi-VN", but not Vinza "vin" or other codes starting with "vi".
+        if (ui.Equals("vi", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("vi-", StringComparison.OrdinalIgnoreCase))
+            return "vi";
+        if (AppLanguages.PortugueseVariant(ui) is { } portuguese)
+            return portuguese;
+        if (ui.Equals("tr", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("tr-", StringComparison.OrdinalIgnoreCase))
+            return "tr";
         if (ui.StartsWith("ja", StringComparison.OrdinalIgnoreCase))
             return "ja";
         if (ui.StartsWith("ko", StringComparison.OrdinalIgnoreCase))
@@ -123,9 +140,6 @@ public sealed class LocalizationService : ILocalizer
         // "ar" and every region ("ar-SA", "ar-EG", …), but not other codes starting with "ar".
         if (ui.Equals("ar", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("ar-", StringComparison.OrdinalIgnoreCase))
             return "ar";
-        // Brazilian Portuguese is the only Portuguese, so Portugal's "pt-PT" gets it too.
-        if (ui.StartsWith("pt", StringComparison.OrdinalIgnoreCase))
-            return "pt-BR";
         // "fr" and every region ("fr-FR", "fr-CA", …), but not North Frisian "frr".
         if (ui.Equals("fr", StringComparison.OrdinalIgnoreCase) || ui.StartsWith("fr-", StringComparison.OrdinalIgnoreCase))
             return "fr";

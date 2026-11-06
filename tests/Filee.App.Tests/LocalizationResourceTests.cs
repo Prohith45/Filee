@@ -8,6 +8,7 @@ using Filee.App.Services;
 using Filee.App.ViewModels;
 using Filee.App.Views;
 using Filee.Core.Localization;
+using Filee.Core.Settings;
 
 namespace Filee.App.Tests;
 
@@ -33,7 +34,7 @@ public class LocalizationResourceTests
     public void Arabic_mirrors_the_main_window_and_english_brings_it_back()
     {
         TestServices.EnsureInitialized("en");
-        using var model = new MainWindowViewModel(AppHost.Services, AppHost.Get<ILocalizer>(), AppHost.Get<UpdateService>());
+        using var model = new MainWindowViewModel(AppHost.Services, AppHost.Get<ILocalizer>(), AppHost.Get<UpdateService>(), AppHost.Get<UserDataStore>());
         model.Navigate("general");
         var window = new MainWindow { DataContext = model, Width = 1080, Height = 820 };
         window.Show();
@@ -124,6 +125,68 @@ public class LocalizationResourceTests
         Assert.Equal("ホーム", text.Text);
         Assert.Equal("オン", toggle.OnContent);
         Assert.Equal("オフ", toggle.OffContent);
+        TestServices.EnsureInitialized("de");
+        Assert.Equal("Start", text.Text);
+        Assert.Equal("Ein", toggle.OnContent);
+        Assert.Equal("Aus", toggle.OffContent);
         window.Close();
+    }
+
+    /// <summary>
+    /// A language switch publishes its strings in one resource change: a change per key reached every control of every
+    /// window still alive, and made the later App tests minutes slower (#540).
+    /// </summary>
+    [AvaloniaFact]
+    public void A_language_switch_publishes_its_strings_in_one_resource_change()
+    {
+        TestServices.EnsureInitialized("en");
+        var app = Application.Current!;
+        var changes = 0;
+        void Count(object? sender, ResourcesChangedEventArgs e) => changes++;
+        app.ResourcesChanged += Count;
+        try
+        {
+            AppHost.Get<LocalizationService>().SetLanguage("ko");
+            Assert.Equal(1, changes);
+            Assert.True(app.TryGetResource("home.title", null, out var title));
+            Assert.Equal("홈", title);
+        }
+        finally
+        {
+            app.ResourcesChanged -= Count;
+            TestServices.EnsureInitialized("en");
+        }
+    }
+
+    /// <summary>A switch before the dictionary is attached still takes effect, and attaching later shows the last language.</summary>
+    [AvaloniaFact]
+    public void A_language_set_before_attaching_shows_once_attached()
+    {
+        TestServices.EnsureInitialized("en");
+        var app = Application.Current!;
+        var merged = app.Resources.MergedDictionaries;
+        var count = merged.Count;
+        var localization = new LocalizationService();
+        var changed = 0;
+        localization.LanguageChanged += (_, _) => changed++;
+        try
+        {
+            localization.SetLanguage("ko");
+            Assert.Equal("ko", localization.Language);
+            Assert.Equal("ko", System.Globalization.CultureInfo.CurrentUICulture.Name);
+            Assert.Equal("홈", localization["home.title"]);
+            Assert.Equal(1, changed);
+
+            localization.Attach(app);
+            Assert.Equal(count + 1, merged.Count);
+            Assert.True(app.TryGetResource("home.title", null, out var title));
+            Assert.Equal("홈", title);
+        }
+        finally
+        {
+            while (merged.Count > count)
+                merged.RemoveAt(merged.Count - 1);
+            TestServices.EnsureInitialized("en");
+        }
     }
 }
