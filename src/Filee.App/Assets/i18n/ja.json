@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "このファイル形式は目標サイズ指定に対応していません",
   "error.size_target_animation": "アニメーション画像やマルチフレームファイルは目標サイズに縮小できません",
   "error.size_target_too_small": "目標サイズ {0} が小さすぎるため達成できません",
-  "cli.error.preset_is_prompt": "変換前に値の入力が必要です"
+  "cli.error.preset_is_prompt": "変換前に値の入力が必要です",
+  "preset.reduce_size": "ファイルサイズ縮小",
+  "preset.resize_pixels": "リサイズ (ピクセル)",
+  "preset.resize_percent": "リサイズ (％)",
+  "preset.set_quality": "画質変更",
+  "preset.set_dpi": "DPI 変更",
+  "preset.reduce_to": "{0} 以下に縮小",
+  "donut.tools_hint": "{0} ↻ ツール"
 }

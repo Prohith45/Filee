@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "El tamaño objetivo no es compatible con este tipo de archivo",
   "error.size_target_animation": "Las imágenes animadas y archivos fotograma múltiple no se pueden reducir a un tamaño objetivo",
   "error.size_target_too_small": "El tamaño objetivo {0} es demasiado pequeño",
-  "cli.error.preset_is_prompt": "El ajuste preestablecido solicita un valor antes de convertir"
+  "cli.error.preset_is_prompt": "El ajuste preestablecido solicita un valor antes de convertir",
+  "preset.reduce_size": "Reducir tamaño",
+  "preset.resize_pixels": "Cambiar tamaño (píxeles)",
+  "preset.resize_percent": "Cambiar tamaño (porcentaje)",
+  "preset.set_quality": "Cambiar calidad",
+  "preset.set_dpi": "Cambiar DPI",
+  "preset.reduce_to": "Reducir a {0}",
+  "donut.tools_hint": "{0} ↻ herramientas"
 }

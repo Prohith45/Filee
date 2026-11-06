@@ -234,7 +234,6 @@ public sealed partial class DonutMenu
         {
             LeaveTools();
             return true;
-            return true;
         }
         if (!HandleKeyCore(key))
             return false;

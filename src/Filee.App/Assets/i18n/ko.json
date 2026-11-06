@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "이 파일 형식은 목표 용량 축소를 지원하지 않습니다",
   "error.size_target_animation": "애니메이션 이미지 및 다중 프레임 파일은 목표 용량으로 축소할 수 없습니다",
   "error.size_target_too_small": "목표 용량 {0} 이(가) 너무 작습니다",
-  "cli.error.preset_is_prompt": "변환 전 입력 값이 필요합니다"
+  "cli.error.preset_is_prompt": "변환 전 입력 값이 필요합니다",
+  "preset.reduce_size": "용량 줄이기",
+  "preset.resize_pixels": "크기 조절 (픽셀)",
+  "preset.resize_percent": "크기 조절 (백분율)",
+  "preset.set_quality": "화질 변경",
+  "preset.set_dpi": "DPI 변경",
+  "preset.reduce_to": "{0} (으)로 줄이기",
+  "donut.tools_hint": "{0} ↻ 도구"
 }

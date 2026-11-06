@@ -1,7 +1,6 @@
 {
   "app.name": "Filee",
   "app.tagline": "Kéo, thả, xong.",
-
   "fields.title": "Lĩnh vực",
   "fields.description": "Tắt các lĩnh vực bạn không làm việc. Định dạng chỉ thuộc các lĩnh vực đã tắt sẽ không xuất hiện trong các phần của vòng tròn, trong “Cấu hình sẵn có thể dùng” ở Cài đặt → Thanh công cụ vòng tròn, trong danh sách ở Cài đặt → Cấu hình sẵn và trong danh sách “Chuyển đổi sang” của cấu hình sẵn. Filee vẫn nhận ra các tệp của định dạng đó, dòng lệnh vẫn chuyển đổi sang được, và tệp bạn thả vào vẫn hiện các định dạng thuộc lĩnh vực của chính nó.",
   "fields.formats": "Định dạng: {0}",
@@ -18,7 +17,6 @@
   "fields.name.video-pro": "Sản xuất & phát sóng video",
   "fields.name.audio-pro": "Âm thanh chuyên nghiệp",
   "fields.name.legacy": "Định dạng cũ",
-
   "nav.home": "Trang chủ",
   "nav.general": "Chung",
   "nav.triggers": "Phím tắt",
@@ -31,7 +29,6 @@
   "nav.about": "Giới thiệu",
   "nav.collapse": "Thu gọn thanh bên",
   "nav.expand": "Mở rộng thanh bên",
-
   "tray.open": "Mở Filee",
   "tray.pause": "Tạm dừng phím tắt",
   "tray.resume": "Tiếp tục phím tắt",
@@ -43,7 +40,6 @@
   "close.tray": "Giữ trong khay",
   "close.quit": "Thoát",
   "close.dont_ask": "Không hỏi lại",
-
   "home.title": "Trang chủ",
   "home.drop_title": "Thả tệp vào đây",
   "home.drop_select": "Nhấp đúp để chọn tệp",
@@ -72,7 +68,6 @@
   "home.undone": "Đã hoàn tác: kết quả đã ở trong Thùng rác",
   "home.undone_original": "Đã hoàn tác: kết quả đã ở trong Thùng rác, cùng với các bản gốc mà chúng đã thay thế",
   "home.undo_failed": "Không thể chuyển {0} vào Thùng rác: {1}",
-
   "donut.center_drag": "Đưa tệp vào đây",
   "donut.files_same": "{0} × {1}",
   "donut.files_mixed": "{0} tệp",
@@ -88,7 +83,6 @@
   "donut.group_caption": "Nhóm {0} mục",
   "donut.flip_to_back": "{0} mặt sau",
   "donut.flip_to_front": "{0} mặt trước",
-
   "toast.converting": "{0} → {1}",
   "toast.done": "Xong",
   "toast.done_errors": "{0}/{1} tệp lỗi",
@@ -101,7 +95,6 @@
   "toast.get_fonts": "Tải phông chữ",
   "download.badge": "{0}/s · {1}",
   "download.badge_files": "{0} · {1}/{2} tệp",
-
   "error.unsupported_source": "Loại tệp này không được hỗ trợ",
   "error.empty_file": "Tệp trống (0 byte). Tệp tạo bằng “Mới” trong menu chuột phải sẽ trống cho đến khi bạn mở nó trong ứng dụng tương ứng và lưu lại",
   "format_request.request": "Yêu cầu định dạng này",
@@ -189,7 +182,6 @@
   "notice.geo_field_names": "Tên trường Shapefile dài tối đa 10 ký tự: một số tên đã được rút ngắn",
   "notice.geo_shapefile_split": "Shapefile chỉ chứa một loại hình, nên điểm, đường và đa giác đã được lưu thành các tệp riêng",
   "notice.geo_heights_dropped": "Một số điểm không có độ cao mà Shapefile không thể bỏ trống, nên mọi độ cao đã bị bỏ qua",
-
   "engine.reason.not_installed": "Chưa cài đặt",
   "engine.reason.error": "Lỗi khi kiểm tra",
   "engine.reason.unsupported_platform": "Không có trên nền tảng này",
@@ -250,7 +242,6 @@
   "engine.calibre.description": "Định dạng sách điện tử hiếm (LIT, LRF, CHM, PDB, RB…) và đầu ra Kindle (MOBI, AZW3).\nKhi đặt trên trình ghi HWPX, Calibre cũng tạo PDF cho sách điện tử (nhanh hơn nhiều với sách dài).",
   "engine.libreoffice.description": "Đọc các định dạng cũ hơn và ít phổ biến: DOC, PPT, Pages, Keynote, Numbers, WordPerfect, ClarisWorks, Publisher, Visio…\nCũng lưu dưới dạng DOC, XLS, PPT, ODT, ODP, mẫu OpenDocument và EMF.",
   "engine.translator.description": "Dịch tài liệu và sách điện tử ngay trên máy bằng các mô hình Ollama ngoại tuyến.\nCũng dịch phụ đề SRT và WebVTT: chỉ văn bản của từng câu phụ đề được gửi tới mô hình, số thứ tự và mốc thời gian được giữ nguyên.",
-
   "profile.images": "Ảnh",
   "profile.pdf": "PDF",
   "profile.office": "Tài liệu",
@@ -270,7 +261,6 @@
   "profile.models": "Mô hình 3D",
   "profile.geo": "Không gian địa lý",
   "profile.mixed": "Tệp hỗn hợp",
-
   "preset.crop": "Cắt",
   "crop.save": "Cắt & lưu",
   "crop.reset": "Đặt lại",
@@ -395,7 +385,6 @@
   "clip.silence_removed": "Đã gỡ đoạn im lặng: {0}",
   "clip.no_silence": "Không tìm thấy đoạn im lặng",
   "clip.cannot_play": "Không thể phát đoạn này",
-
   "preset.half_size": "Nửa kích thước",
   "preset.half_size.donut": "Nửa kích thước",
   "preset.image_edit": "Chỉnh sửa ảnh",
@@ -509,7 +498,6 @@
   "preset.merge_audio": "Ghép âm thanh",
   "preset.merge_images": "Ghép ảnh",
   "preset.remove_metadata": "Xóa siêu dữ liệu",
-
   "format.folder": "Thư mục",
   "format.category.Image": "Ảnh",
   "format.category.Pdf": "PDF",
@@ -529,7 +517,6 @@
   "format.category.Data": "Dữ liệu",
   "format.category.Model3D": "Mô hình 3D",
   "format.category.Geo": "Không gian địa lý",
-
   "general.title": "Chung",
   "general.language": "Ngôn ngữ",
   "general.language_auto": "Mặc định của hệ thống",
@@ -612,7 +599,6 @@
   "general.reset_library": "Đặt lại mặc định",
   "general.reset_confirm": "Thay thế mọi cấu hình sẵn và hồ sơ thanh công cụ bằng mặc định?",
   "general.imported": "Đã nhập {0} mục",
-
   "triggers.title": "Phím tắt",
   "triggers.description": "Chọn cách mở thanh công cụ vòng tròn. Bạn có thể thêm bao nhiêu thao tác tùy thích.",
   "triggers.macos_permissions": "Cho phép Filee trong Cài đặt hệ thống > Quyền riêng tư & bảo mật > Trợ năng.\nNếu Filee đã được bật nhưng thao tác không hoạt động, hãy gỡ bỏ bằng − rồi thêm lại bằng +.\nFinder cũng hỏi quyền Tự động hóa ở lần đầu bạn dùng phím tắt cho vùng chọn.",
@@ -670,7 +656,6 @@
   "triggers.excluded_none_running": "Không có ứng dụng nào khác đang mở cửa sổ.",
   "triggers.excluded_note": "Thao tác và phím tắt không có tác dụng khi con trỏ nằm trên các ứng dụng này.",
   "triggers.paused": "Phím tắt đang tạm dừng",
-
   "toolbar.title": "Thanh công cụ vòng tròn",
   "toolbar.step_profile": "1. Chọn một hồ sơ",
   "toolbar.step_arrange": "2. Sắp xếp cấu hình sẵn",
@@ -738,18 +723,17 @@
   "toolbar.mixed_covered": "“{0}” đứng trước và cho phép mọi phần mở rộng được chọn ở đây, nên hồ sơ này không bao giờ được dùng.",
   "toolbar.mixed_others": "Các tổ hợp tệp khác sẽ mở “{0}”.",
   "toolbar.mixed_others_self": "Không còn hồ sơ hỗn hợp nào không chọn mục nào, nên hồ sơ này cũng được dùng cho mọi tổ hợp khác.",
-   "toolbar.chip_tip.makes": "→ {0} · {1}",
-   "toolbar.chip_tip.makes_same": "→ Cùng định dạng",
-   "toolbar.chip_tip.makes_name": "→ {0}",
-   "toolbar.chip_tip.works_with": "Định dạng được nhận: {0}",
-   "toolbar.chip_tip.kind": "{0} ({1})",
-   "toolbar.chip_tip.name_separator": ", ",
-   "toolbar.chip_tip.names_more": "{0} +{1}",
-   "toolbar.chip_tip.more_shift": "+{0} mục khác · Shift để hiện tất cả",
-   "toolbar.chip_tip.shift_all": "Shift để hiện tất cả",
-   "toolbar.chip_tip.any_file": "Mọi tệp",
-   "tags.remove": "Gỡ bỏ",
-
+  "toolbar.chip_tip.makes": "→ {0} · {1}",
+  "toolbar.chip_tip.makes_same": "→ Cùng định dạng",
+  "toolbar.chip_tip.makes_name": "→ {0}",
+  "toolbar.chip_tip.works_with": "Định dạng được nhận: {0}",
+  "toolbar.chip_tip.kind": "{0} ({1})",
+  "toolbar.chip_tip.name_separator": ", ",
+  "toolbar.chip_tip.names_more": "{0} +{1}",
+  "toolbar.chip_tip.more_shift": "+{0} mục khác · Shift để hiện tất cả",
+  "toolbar.chip_tip.shift_all": "Shift để hiện tất cả",
+  "toolbar.chip_tip.any_file": "Mọi tệp",
+  "tags.remove": "Gỡ bỏ",
   "presets.title": "Cấu hình sẵn",
   "presets.add": "Mới",
   "presets.add_empty": "Cấu hình sẵn trống",
@@ -1025,7 +1009,6 @@
   "presets.delete_confirm": "Xóa “{0}”? Cấu hình sẵn này cũng sẽ bị gỡ khỏi mọi thanh công cụ và nhóm.",
   "presets.name_required": "Nhập tên",
   "presets.select": "Chọn một cấu hình sẵn để chỉnh sửa",
-
   "theme.title": "Chủ đề",
   "theme.style": "Kiểu chủ đề",
   "theme.style.Soft": "Filee Soft",
@@ -1062,7 +1045,6 @@
   "theme.preview": "Xem trước",
   "theme.preview_toggle": "Công tắc mẫu (chỉ để xem trước, không phải cài đặt)",
   "theme.preview_toggle_hint": "Cho thấy công tắc trông thế nào trong chủ đề này. Không thay đổi cài đặt nào.",
-
   "engines.title": "Bộ xử lý chuyển đổi",
   "engines.description": "Filee chọn bộ xử lý có sẵn tốt nhất cho mỗi lần chuyển đổi.\nKhi nhiều bộ xử lý làm được cùng một việc, bộ xử lý ở trên sẽ được dùng.",
   "engines.available": "Sẵn sàng",
@@ -1139,7 +1121,6 @@
   "engines.state.unpacking": "Đang cài đặt…",
   "engines.state.installed": "Đã cài đặt",
   "engines.state.failed": "Thất bại: {0}",
-
   "about.title": "Giới thiệu",
   "about.updates": "Cập nhật",
   "common.search": "Tìm kiếm",
@@ -1164,7 +1145,6 @@
   "feedback.notice_text": "Một ngôi sao trên GitHub giúp người khác tìm thấy Filee.\nVấn đề và ý tưởng cũng luôn được hoan nghênh.",
   "feedback.star": "Gắn sao trên GitHub",
   "feedback.issue": "Báo cáo vấn đề hoặc ý tưởng",
-
   "common.ok": "OK",
   "common.cancel": "Hủy",
   "common.save": "Lưu",
@@ -1174,7 +1154,6 @@
   "common.no": "Không",
   "common.on": "Bật",
   "common.off": "Tắt",
-
   "setup.title": "Chọn bộ xử lý chuyển đổi",
   "setup.description": "Ảnh, PDF, tài liệu Office, HWP, sách điện tử, tệp nén, phông chữ, CAD và mô hình 3D đã chuyển đổi được.\nChỉ tải xuống bộ xử lý cho video và âm thanh hoặc các định dạng hiếm.",
   "setup.note": "Bạn có thể cài đặt hoặc gỡ bỏ bộ xử lý bất cứ lúc nào trong Cài đặt → Bộ xử lý.",
@@ -1337,7 +1316,6 @@
   "watch.status_starting": "Đang khởi động…",
   "watch.status_error": "Không thể theo dõi thư mục này: {0}",
   "watch.cli_hint": "Cũng có trên dòng lệnh: filee watch <folder> --to <format>",
-
   "preset.sheet_studio": "PDF + chỉnh sửa",
   "sheet_studio.title": "Xưởng in bảng tính",
   "sheet_studio.sheets": "Trang tính và thứ tự đầu ra",
@@ -1377,7 +1355,6 @@
   "sheet_studio.apply_fix": "Áp dụng bố cục đề xuất",
   "sheet_studio.add_region": "+ Thêm vùng khác",
   "sheet_studio.region_name": "{0} · vùng {1}",
-
   "whats_new.title": "Có gì mới trong Filee {0}",
   "whats_new.previous": "Trước",
   "whats_new.next": "Tiếp",
@@ -1454,5 +1431,41 @@
   "engines.ollama.connecting": "Đang kết nối...",
   "engines.ollama.complete": "Hoàn tất!",
   "engines.ollama.failed": "Thất bại:",
-  "engines.ollama.error": "Lỗi:"
+  "engines.ollama.error": "Lỗi:",
+  "donut.tools_back": "tools",
+  "toolbar.face_tools": "Tools",
+  "triggers.tools_title": "Tools face key",
+  "triggers.tools_description": "Key to switch the donut to its Tools face (default: R).",
+  "triggers.tools_reset": "Reset to R",
+  "presets.prompt_kind": "Prompt kind",
+  "prompt.title_size": "Reduce file size",
+  "prompt.title_pixels": "Resize dimensions",
+  "prompt.title_percent": "Resize percentage",
+  "prompt.title_quality": "Set image quality",
+  "prompt.title_dpi": "Set image DPI",
+  "prompt.kind_targetsize": "Target file size",
+  "prompt.kind_pixels": "Pixel dimensions",
+  "prompt.kind_percent": "Percent scale",
+  "prompt.kind_quality": "Image quality",
+  "prompt.kind_dpi": "Print resolution (DPI)",
+  "prompt.current_size": "Current size: {0}",
+  "prompt.unit_kb": "KB",
+  "prompt.unit_mb": "MB",
+  "prompt.error_invalid": "Enter a valid positive number.",
+  "prompt.error_not_smaller": "Target must be smaller than {0}.",
+  "prompt.multi_notice": "Each file is reduced to at most this size.",
+  "notice.size_already_small": "Already smaller than target size",
+  "notice.size_quantized": "Quantized to 256 colors to reach target size",
+  "notice.size_target_not_reached": "Could not reach target size",
+  "error.size_target_unsupported": "Target size is not supported for this file type",
+  "error.size_target_animation": "Animated images and multi-frame files cannot be reduced to a target size",
+  "error.size_target_too_small": "Target size {0} is too small to reach",
+  "cli.error.preset_is_prompt": "Preset asks for a value before converting",
+  "preset.reduce_size": "Reduce size",
+  "preset.resize_pixels": "Resize (pixels)",
+  "preset.resize_percent": "Resize (percent)",
+  "preset.set_quality": "Change quality",
+  "preset.set_dpi": "Change DPI",
+  "preset.reduce_to": "Reduce to {0}",
+  "donut.tools_hint": "{0} ↻ tools"
 }

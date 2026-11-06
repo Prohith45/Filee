@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "La taille cible n'est pas prise en charge pour ce type de fichier",
   "error.size_target_animation": "Les images animées et fichiers multi-images ne peuvent pas être réduits à une taille cible",
   "error.size_target_too_small": "La taille cible {0} est trop petite pour être atteinte",
-  "cli.error.preset_is_prompt": "Le préréglage demande une valeur avant la conversion"
+  "cli.error.preset_is_prompt": "Le préréglage demande une valeur avant la conversion",
+  "preset.reduce_size": "Réduire la taille",
+  "preset.resize_pixels": "Redimensionner (pixels)",
+  "preset.resize_percent": "Redimensionner (pourcentage)",
+  "preset.set_quality": "Changer la qualité",
+  "preset.set_dpi": "Changer le DPI",
+  "preset.reduce_to": "Réduire à {0}",
+  "donut.tools_hint": "{0} ↻ outils"
 }

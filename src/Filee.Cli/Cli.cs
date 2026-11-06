@@ -495,7 +495,7 @@ internal static class Cli
             return Success;
         }
         output.WriteLine($"{"ID",-24} {"NAME",-28} TARGET");
-        foreach (var preset in host.Store.Presets.Where(p => !p.IsGroup && !p.IsTool && !p.IsPrompt))
+        foreach (var preset in host.Store.Presets.Where(p => !p.IsGroup && !p.IsTool))
             output.WriteLine($"{preset.Id,-24} {host.Texts.DisplayName(preset),-28} {preset.TargetFormat}");
         output.WriteLine();
         output.WriteLine("Use one with: filee convert <files> --preset <id or name>");

@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "此檔案類型不支援指定目標大小",
   "error.size_target_animation": "動態影像與多幀檔案無法縮小至指定大小",
   "error.size_target_too_small": "目標大小 {0} 太小，無法達到",
-  "cli.error.preset_is_prompt": "預設在轉換前需要輸入數值"
+  "cli.error.preset_is_prompt": "預設在轉換前需要輸入數值",
+  "preset.reduce_size": "縮小檔案",
+  "preset.resize_pixels": "調整尺寸 (像素)",
+  "preset.resize_percent": "調整比例 (百分比)",
+  "preset.set_quality": "變更品質",
+  "preset.set_dpi": "變更 DPI",
+  "preset.reduce_to": "縮小至 {0}",
+  "donut.tools_hint": "{0} ↻ 工具"
 }

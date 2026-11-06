@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "Целевой размер не поддерживается для этого типа файлов",
   "error.size_target_animation": "Анимации и многокадровые файлы нельзя уменьшить до целевого размера",
   "error.size_target_too_small": "Целевой размер {0} слишком мал",
-  "cli.error.preset_is_prompt": "Пресет запрашивает значение перед конвертацией"
+  "cli.error.preset_is_prompt": "Пресет запрашивает значение перед конвертацией",
+  "preset.reduce_size": "Уменьшить размер",
+  "preset.resize_pixels": "Изменить размер (пиксели)",
+  "preset.resize_percent": "Изменить размер (проценты)",
+  "preset.set_quality": "Изменить качество",
+  "preset.set_dpi": "Изменить DPI",
+  "preset.reduce_to": "Уменьшить до {0}",
+  "donut.tools_hint": "{0} ↻ инструменты"
 }

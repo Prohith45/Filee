@@ -43,7 +43,6 @@ public enum PromptKind
     Quality,
     Dpi,
 }
-}
 
 /// <summary>
 /// Reads an enum by name. A value this version doesn't know (a newer Filee's, or a number outside the enum) becomes

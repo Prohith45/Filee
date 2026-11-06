@@ -8,17 +8,17 @@ namespace Filee.Core.Tests;
 public sealed class SizeTextTests
 {
     [Theory]
-    [InlineData("500", SizeUnit.KB, 500 * 1024L)]
-    [InlineData("500kb", SizeUnit.KB, 500 * 1024L)]
-    [InlineData("500 KB", SizeUnit.KB, 500 * 1024L)]
-    [InlineData("500k", SizeUnit.KB, 500 * 1024L)]
-    [InlineData("1.5 MB", SizeUnit.KB, (long)(1.5 * 1024 * 1024))]
-    [InlineData("1,5mb", SizeUnit.KB, (long)(1.5 * 1024 * 1024))]
-    [InlineData("2 GB", SizeUnit.KB, 2L * 1024 * 1024 * 1024)]
-    [InlineData("2048 bytes", SizeUnit.KB, 2048L)]
-    [InlineData("1024b", SizeUnit.KB, 1024L)]
-    [InlineData("1", SizeUnit.MB, 1024 * 1024L)]
-    public void Parses_valid_sizes(string input, SizeUnit defaultUnit, long expected)
+    [InlineData("500", ByteUnit.KB, 500 * 1024L)]
+    [InlineData("500kb", ByteUnit.KB, 500 * 1024L)]
+    [InlineData("500 KB", ByteUnit.KB, 500 * 1024L)]
+    [InlineData("500k", ByteUnit.KB, 500 * 1024L)]
+    [InlineData("1.5 MB", ByteUnit.KB, (long)(1.5 * 1024 * 1024))]
+    [InlineData("1,5mb", ByteUnit.KB, (long)(1.5 * 1024 * 1024))]
+    [InlineData("2 GB", ByteUnit.KB, 2L * 1024 * 1024 * 1024)]
+    [InlineData("2048 bytes", ByteUnit.KB, 2048L)]
+    [InlineData("1024b", ByteUnit.KB, 1024L)]
+    [InlineData("1", ByteUnit.MB, 1024 * 1024L)]
+    public void Parses_valid_sizes(string input, ByteUnit defaultUnit, long expected)
     {
         Assert.True(SizeText.TryParse(input, defaultUnit, out var bytes));
         Assert.Equal(expected, bytes);
@@ -37,7 +37,7 @@ public sealed class SizeTextTests
     [InlineData("1023")] // Less than 1 KB if default is Bytes
     public void Rejects_invalid_sizes(string? input)
     {
-        Assert.False(SizeText.TryParse(input, SizeUnit.Bytes, out _));
+        Assert.False(SizeText.TryParse(input, ByteUnit.Bytes, out _));
     }
 
     [Fact]

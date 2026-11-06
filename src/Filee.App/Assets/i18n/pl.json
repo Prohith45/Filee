@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "Docelowy rozmiar nie jest obsługiwany dla tego typu pliku",
   "error.size_target_animation": "Animacje i pliki wieloklatkowe nie mogą być zmniejszane do rozmiaru docelowego",
   "error.size_target_too_small": "Docelowy rozmiar {0} jest zbyt mały do osiągnięcia",
-  "cli.error.preset_is_prompt": "Preset wymaga podania wartości przed konwersją"
+  "cli.error.preset_is_prompt": "Preset wymaga podania wartości przed konwersją",
+  "preset.reduce_size": "Zmniejsz rozmiar",
+  "preset.resize_pixels": "Zmień rozmiar (piksele)",
+  "preset.resize_percent": "Zmień rozmiar (procent)",
+  "preset.set_quality": "Zmień jakość",
+  "preset.set_dpi": "Zmień DPI",
+  "preset.reduce_to": "Zmniejsz do {0}",
+  "donut.tools_hint": "{0} ↻ narzędzia"
 }

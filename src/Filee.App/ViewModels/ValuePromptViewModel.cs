@@ -153,7 +153,7 @@ public sealed partial class ValuePromptViewModel : ObservableObject
             return;
         }
 
-        var defaultUnit = SelectedUnit == "MB" ? SizeUnit.MB : SizeUnit.KB;
+        var defaultUnit = SelectedUnit == "MB" ? ByteUnit.MB : ByteUnit.KB;
         if (!SizeText.TryParse(TargetSizeText, defaultUnit, out var bytes))
         {
             IsValid = false;
@@ -221,7 +221,7 @@ public sealed partial class ValuePromptViewModel : ObservableObject
         switch (_kind)
         {
             case PromptKind.TargetSize:
-                var defaultUnit = SelectedUnit == "MB" ? SizeUnit.MB : SizeUnit.KB;
+                var defaultUnit = SelectedUnit == "MB" ? ByteUnit.MB : ByteUnit.KB;
                 if (!SizeText.TryParse(TargetSizeText, defaultUnit, out var bytes))
                     return null;
                 _store.Settings.LastTargetSizeText = TargetSizeText.Trim();

@@ -94,7 +94,7 @@ public sealed partial class JobQueue : IAsyncDisposable
         job.State = JobState.Running;
         Notify(job);
 
-        if (job.Preset.IsPrompt || job.Preset.IsTool || job.Preset.IsGroup)
+        if (job.Preset.IsPrompt || job.Preset.Kind == PresetKind.Tool || job.Preset.IsGroup)
         {
             _log.LogError("Preset {Preset} of kind {Kind} cannot be run directly", job.Preset.Id, job.Preset.Kind);
             job.State = JobState.Failed;

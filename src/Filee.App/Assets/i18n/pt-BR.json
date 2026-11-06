@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "Tamanho alvo não é suportado para este tipo de arquivo",
   "error.size_target_animation": "Imagens animadas e arquivos de múltiplos quadros não podem ser reduzidos a um tamanho alvo",
   "error.size_target_too_small": "O tamanho alvo {0} é pequeno demais para ser atingido",
-  "cli.error.preset_is_prompt": "A predefinição solicita um valor antes de converter"
+  "cli.error.preset_is_prompt": "A predefinição solicita um valor antes de converter",
+  "preset.reduce_size": "Reduzir tamanho",
+  "preset.resize_pixels": "Redimensionar (pixels)",
+  "preset.resize_percent": "Redimensionar (porcentagem)",
+  "preset.set_quality": "Alterar qualidade",
+  "preset.set_dpi": "Alterar DPI",
+  "preset.reduce_to": "Reduzir para {0}",
+  "donut.tools_hint": "{0} ↻ ferramentas"
 }

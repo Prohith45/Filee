@@ -339,6 +339,8 @@ public sealed partial class DonutMenu
         else if (!CanFlip)
         {
             return false;
+        }
+
         _flipTarget = next;
         if (!Motion.Enabled)
         {
@@ -449,7 +451,6 @@ public sealed partial class DonutMenu
     /// </summary>
     private void SwapFaces()
     {
-        _flipSwapped = true;
         var target = _flipTarget ?? (ActiveFace == DonutFace.Tools
             ? _returnFace
             : (ActiveFace == DonutFace.Front ? DonutFace.Back : DonutFace.Front));

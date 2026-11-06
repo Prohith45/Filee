@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "Target size is not supported for this file type",
   "error.size_target_animation": "Animated images and multi-frame files cannot be reduced to a target size",
   "error.size_target_too_small": "Target size {0} is too small to reach",
-  "cli.error.preset_is_prompt": "Preset asks for a value before converting"
+  "cli.error.preset_is_prompt": "Preset asks for a value before converting",
+  "preset.reduce_size": "Reduce size",
+  "preset.resize_pixels": "Resize (pixels)",
+  "preset.resize_percent": "Resize (percent)",
+  "preset.set_quality": "Change quality",
+  "preset.set_dpi": "Change DPI",
+  "preset.reduce_to": "Reduce to {0}",
+  "donut.tools_hint": "{0} ↻ tools"
 }

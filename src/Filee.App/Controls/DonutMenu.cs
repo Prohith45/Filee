@@ -226,7 +226,6 @@ public sealed partial class DonutMenu : Control
         _flipClock = -1;
         _flipTarget = null;
         _flipQueued = false;
-        _flipSwapped = false;
         _closing = false;
         _closeCallback = null;
         if (!Motion.Enabled)

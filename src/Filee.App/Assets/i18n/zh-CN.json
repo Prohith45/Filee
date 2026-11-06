@@ -1460,5 +1460,12 @@
   "error.size_target_unsupported": "此文件类型不支持指定目标大小",
   "error.size_target_animation": "动图和多帧文件无法缩小到指定大小",
   "error.size_target_too_small": "目标大小 {0} 太小，无法达到",
-  "cli.error.preset_is_prompt": "预设在转换前需要输入数值"
+  "cli.error.preset_is_prompt": "预设在转换前需要输入数值",
+  "preset.reduce_size": "缩小文件",
+  "preset.resize_pixels": "调整尺寸 (像素)",
+  "preset.resize_percent": "调整比例 (百分比)",
+  "preset.set_quality": "更改质量",
+  "preset.set_dpi": "更改 DPI",
+  "preset.reduce_to": "缩小至 {0}",
+  "donut.tools_hint": "{0} ↻ 工具"
 }
