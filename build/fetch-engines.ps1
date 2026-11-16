@@ -153,7 +153,11 @@ function Get-Engine([string]$name, [switch]$X64) {
         Write-Host "get  $name  $url"
         try {
             # GitHub's release downloads answer 504 for minutes at a time, which stopped whole CI runs: try again a few times.
-            Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing -UserAgent 'Filee-build' -MaximumRetryCount 5 -RetryIntervalSec 20
+            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing -UserAgent 'Filee-build' -MaximumRetryCount 5 -RetryIntervalSec 20
+            } else {
+                Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing -UserAgent 'Filee-build'
+            }
         }
         catch {
             Write-Warning "$name could not be downloaded from $url ($($_.Exception.Message))"

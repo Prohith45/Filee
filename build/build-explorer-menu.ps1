@@ -99,7 +99,7 @@ New-Item -ItemType Directory -Force -Path $obj, $Destination | Out-Null
 # The version resource gets the numbers through a generated header-like prefix (zig's resource compiler has no -D).
 $rc = Join-Path $obj 'FileeExplorerMenu.rc'
 $defines = "#define FILEE_VERSION_MAJOR $major`r`n#define FILEE_VERSION_MINOR $minor`r`n#define FILEE_VERSION_PATCH $patch`r`n#define FILEE_VERSION_TEXT `"$Version`"`r`n"
-Set-Content -Path $rc -Value ($defines + (Get-Content (Join-Path $source 'FileeExplorerMenu.rc') -Raw)) -Encoding utf8NoBOM -NoNewline
+[System.IO.File]::WriteAllText($rc, ($defines + (Get-Content (Join-Path $source 'FileeExplorerMenu.rc') -Raw)), [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "build FileeExplorerMenu.dll $Version ($Architecture)"
 $dll = Join-Path $obj 'FileeExplorerMenu.dll'
@@ -115,7 +115,11 @@ $zigArgs = @('cc', '-target', $target, '-shared', '-O2', '-s', '-nostdlib', '-Wa
 $zigMinutes = 8
 for ($attempt = 1; ; $attempt++) {
     $start = [System.Diagnostics.ProcessStartInfo]::new($zig)
-    foreach ($argument in $zigArgs) { $start.ArgumentList.Add($argument) }
+    if ($null -ne $start.ArgumentList) {
+        foreach ($argument in $zigArgs) { $start.ArgumentList.Add($argument) }
+    } else {
+        $start.Arguments = ($zigArgs | ForEach-Object { if ($_ -match '[\s"]') { "`"$($_ -replace '"', '\"')`"" } else { $_ } }) -join ' '
+    }
     $start.UseShellExecute = $false
     $process = [System.Diagnostics.Process]::Start($start)
     if ($process.WaitForExit($zigMinutes * 60 * 1000)) {
@@ -123,7 +127,7 @@ for ($attempt = 1; ; $attempt++) {
         if ($process.ExitCode -ne 0) { throw "zig cc failed with exit code $($process.ExitCode)" }
         break
     }
-    $process.Kill($true)
+    try { $process.Kill($true) } catch { $process.Kill() }
     $process.WaitForExit()
     if ($attempt -ge 3) { throw "zig cc did not finish in $zigMinutes minutes, $attempt times" }
     Write-Warning "zig cc did not finish in $zigMinutes minutes; trying again ($($attempt + 1) of 3)"
