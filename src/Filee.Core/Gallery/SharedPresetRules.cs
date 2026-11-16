@@ -76,7 +76,7 @@ internal static class SharedPresetRules
     /// installer chooses one); a warning says so.
     /// </summary>
     public static readonly IReadOnlyList<string> Kinds =
-        [nameof(PresetKind.Convert), nameof(PresetKind.Group), nameof(PresetKind.Tool), nameof(PresetKind.CopyToFolder)];
+        [nameof(PresetKind.Convert), nameof(PresetKind.Group), nameof(PresetKind.Tool), nameof(PresetKind.CopyToFolder), nameof(PresetKind.Prompt)];
 
     /// <summary>
     /// The tools that may be shared (<see cref="Preset.Tool"/>; null is the crop): every tool there is. A tool that runs
@@ -143,6 +143,8 @@ internal static class SharedPresetRules
         ("show", Enum<LabelShow>() with { Nullable = true }),
         ("direction", Enum<LabelDirection>() with { Nullable = true }),
         ("askCompression", Flag),
+        ("prompt", Enum<PromptKind>()),
+        ("targetSizeBytes", new IntRule(1, long.MaxValue) { Nullable = true }),
         ("gallery", new LeftOutRule("set by the app on a preset installed from the gallery")),
         ("image", Obj(
             ("quality", new IntRule(1, 100)),
@@ -359,6 +361,7 @@ internal static class SharedPresetRules
         ("isFallback", Flag),
         ("presetIds", new ListRule(new StringRule(64, SharedText.Id), ToolbarProfile.MaxSlices)),
         ("backPresetIds", new ListRule(new StringRule(64, SharedText.Id), ToolbarProfile.MaxSlices) { Nullable = true }),
+        ("toolPresetIds", new ListRule(new StringRule(64, SharedText.Id), ToolbarProfile.MaxSlices) { Nullable = true }),
         ("labelShow", Enum<LabelShow>() with { Nullable = true }),
         ("labelScale", new NumberRule(ToolbarProfile.MinLabelScale, ToolbarProfile.MaxLabelScale)));
 

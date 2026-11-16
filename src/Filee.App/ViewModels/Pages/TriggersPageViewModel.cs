@@ -36,7 +36,10 @@ public sealed partial class TriggerGestureViewModel : ObservableObject
         Scopes = Enum.GetValues<TriggerScope>()
             .Select(s => new Choice<TriggerScope>(s, loc[s == TriggerScope.FileManager ? $"triggers.scope.{s}{platform}" : $"triggers.scope.{s}"]))
             .ToList();
-        Faces = Enum.GetValues<DonutFace>().Select(f => new Choice<DonutFace>(f, loc[$"triggers.face.{f}"])).ToList();
+        Faces = Enum.GetValues<DonutFace>()
+            .Where(f => f != DonutFace.Tools)
+            .Select(f => new Choice<DonutFace>(f, loc[$"triggers.face.{f}"]))
+            .ToList();
         RecordLabel = loc["triggers.record"];
         RecordingLabel = loc["triggers.recording"];
         SystemLabel = loc["triggers.threshold_system"];

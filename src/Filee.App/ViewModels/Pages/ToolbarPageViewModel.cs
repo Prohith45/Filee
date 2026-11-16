@@ -574,12 +574,12 @@ public sealed partial class ToolbarPageViewModel : ObservableObject, IDisposable
 
     partial void OnEditingFaceChanged(DonutFace value)
     {
-        OnPropertyChanged(nameof(EditingFront));
-        OnPropertyChanged(nameof(EditingBack));
-        OnPropertyChanged(nameof(EditingTools));
         Message = null;
         OpenGroup = null;
         Rebuild();
+        OnPropertyChanged(nameof(EditingFront));
+        OnPropertyChanged(nameof(EditingBack));
+        OnPropertyChanged(nameof(EditingTools));
     }
 
     partial void OnSelectedProfileChanged(ProfileItemViewModel? value)

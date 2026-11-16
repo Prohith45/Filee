@@ -431,6 +431,7 @@ public sealed class Preset
     public PromptKind Prompt { get; set; } = PromptKind.None;
 
     /// <summary>Maximum output size in bytes; null = off.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? TargetSizeBytes { get; set; }
 
     /// <summary>True for a <see cref="PresetKind.Prompt"/>.</summary>
@@ -924,12 +925,15 @@ public sealed class ImageOptions
     public int Width { get; set; } = 1200;
 
     /// <summary>Target width in pixels when <see cref="Resize"/> is <see cref="ResizeMode.Exact"/>.</summary>
+    [JsonIgnore]
     public int? ExactWidth { get; set; }
 
     /// <summary>Target height in pixels when <see cref="Resize"/> is <see cref="ResizeMode.Exact"/>.</summary>
+    [JsonIgnore]
     public int? ExactHeight { get; set; }
 
     /// <summary>Whether to preserve aspect ratio when resizing in <see cref="ResizeMode.Exact"/> mode (default true).</summary>
+    [JsonIgnore]
     public bool KeepAspect { get; set; } = true;
 
     /// <summary>
@@ -1514,6 +1518,7 @@ public sealed class MediaOptions
     public int AudioBitrateKbps { get; set; }
 
     /// <summary>Target video bitrate in kbit/s calculated from target size; 0 = normal CRF/quality encoding.</summary>
+    [JsonIgnore]
     public int TargetVideoKbps { get; set; }
 
     /// <summary>Drop the audio track of a video.</summary>

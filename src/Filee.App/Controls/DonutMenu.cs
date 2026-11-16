@@ -19,6 +19,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Filee.App.Services;
 using Filee.Core.Presets;
+using Filee.Core.Settings;
 
 namespace Filee.App.Controls;
 

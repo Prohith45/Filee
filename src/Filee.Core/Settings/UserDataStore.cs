@@ -1182,7 +1182,7 @@ internal static class SettingsMigrations
             changed |= LearnExtensions(profiles, out _, ["vtf"]);
         // v95: prompt presets (reduce size, resize pixels, resize percent, set quality, set dpi) and the tools face
         //      on built-in donuts (images, pdf, video, audio).
-        if (from < 95)
+        if (from < 95 && profiles.Any(p => p.Id is "images" or "pdf" or "video" or "audio"))
         {
             foreach (var preset in BuiltInData.PromptPresets().Where(p => presets.All(existing => existing.Id != p.Id)))
             {

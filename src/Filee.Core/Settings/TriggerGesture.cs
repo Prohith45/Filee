@@ -57,6 +57,8 @@ public enum DonutFace
     Front,
     /// <summary>The back face (the second set of slices); the front when the back has no slice for the files.</summary>
     Back,
+    /// <summary>The tools face (custom features and tools).</summary>
+    Tools,
 }
 
 /// <summary>A user-configurable gesture that opens the donut toolbar.</summary>

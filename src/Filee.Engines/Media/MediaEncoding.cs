@@ -651,7 +651,8 @@ internal static partial class MediaEncoding
     {
         var fitting = new Preset { Media = media }.Clone().Media;
         fitting.HardwareEncoding = false;
-        fitting.MaxSizeMb = Math.Max(1, (decimal)Math.Round((double)limitBytes / (1000.0 * 1000.0), 2));
+        if (fitting.MaxSizeMb <= 0 && fitting.MaxSizePercent <= 0)
+            fitting.MaxSizeMb = Math.Max(0.01, Math.Round((double)limitBytes / (1000.0 * 1000.0), 2));
         fitting.AudioBitrateKbps = fitting.AudioBitrateKbps is > 0 and < 96 ? fitting.AudioBitrateKbps : 96;
         var audio = fitting.RemoveAudio ? 0 : fitting.AudioBitrateKbps * info.AudioTracks.Count;
         var kbps = info.Duration is { TotalSeconds: > 0 } length ? FitBitrateKbps(limitBytes, length.TotalSeconds, audio) : 0;

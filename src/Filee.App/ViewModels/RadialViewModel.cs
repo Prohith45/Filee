@@ -306,17 +306,17 @@ public sealed partial class RadialViewModel(UserDataStore store, ILocalizer loc,
         (_back, _backIds, _formats, _off) = (null, [.. profile.BackPresetIds ?? []], formats, off);
         var load = ++_loads;
         if (backFace)
-            ShowFace(BackFace().Items.Count > 0); // asked for its back (a group held open there): shown, greyed or not
+            ShowFace(BackFace().Items.Count > 0 ? DonutFace.Back : DonutFace.Front); // asked for its back (a group held open there): shown, greyed or not
         else
         {
-            ShowFace(back: false, checkBack: false);
+            ShowFace(DonutFace.Front, checkOther: false);
             // As Load: the back is checked once the front is on screen, for the flip, leaving the slices shown as they
             // are (an example ring may have replaced the top one by then).
             if (_backIds.Count > 0)
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (load == _loads && _back is null)
-                        ShowFlip(IsBackFace);
+                        UpdateFaceHints(checkOther: true);
                 }, DispatcherPriority.Background);
         }
         ReserveSubRing = _front.Items.Any(item => item.IsGroup) || HasGroups(_backIds);

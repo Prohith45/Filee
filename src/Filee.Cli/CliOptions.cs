@@ -188,10 +188,10 @@ internal sealed record CliOptions
                     options.Zip = true;
                     break;
                 case "--target-size":
-                    var size = Value();
-                    if (size is not null)
+                    var targetSizeStr = Value();
+                    if (targetSizeStr is not null)
                     {
-                        if (SizeText.TryParse(size, out var bytes) && bytes > 0)
+                        if (SizeText.TryParse(targetSizeStr, out var bytes) && bytes > 0)
                             options.TargetSizeBytes = bytes;
                         else
                             options.Error ??= "--target-size must be a size like 200kb or 1.5mb.";

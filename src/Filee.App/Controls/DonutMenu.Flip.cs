@@ -17,16 +17,9 @@ using Avalonia;
 using Avalonia.Input;
 using Avalonia.Media;
 using Filee.App.Services;
+using Filee.Core.Settings;
 
 namespace Filee.App.Controls;
-
-/// <summary>Which face of the donut is being displayed.</summary>
-public enum DonutFace
-{
-    Front,
-    Back,
-    Tools,
-}
 
 /// <summary>Event args raised when faces swap halfway through a flip animation.</summary>
 public sealed class FaceSwapEventArgs(DonutFace target) : EventArgs
