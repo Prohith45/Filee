@@ -52,8 +52,8 @@ public partial class BackFaceTests
             // Nothing moved off the front, nothing shown twice.
             Assert.Empty(back.Intersect(profile.PresetIds));
         }
-        // Only archives have nothing more to offer ("One ZIP" is on their front since settings schema 28).
-        Assert.Equal(["archives"], BuiltInData.CreateProfiles().Where(p => p.BackPresetIds!.Count == 0).Select(p => p.Id));
+        // Archives and the small folder-to-ISO donut have no second face.
+        Assert.Equal(["archives", "folders"], BuiltInData.CreateProfiles().Where(p => p.BackPresetIds!.Count == 0).Select(p => p.Id));
     }
 
     [Fact]
@@ -139,13 +139,13 @@ public partial class BackFaceTests
 
         Assert.True(SettingsMigrations.ApplyToLibrary(29, presets, profiles));
 
-        foreach (var profile in profiles.Where(p => p != mine))
+        foreach (var profile in profiles.Where(p => p != mine && p.Id != "folders"))
         {
             var expected = Schema58(profile.Id).BackPresetIds!.Where(id => id != "to-gif");
             Assert.Equal(expected, profile.BackPresetIds);
         }
         Assert.Null(mine.BackPresetIds); // the store gives it an empty one (below)
-        Assert.All(profiles, p => Assert.Equal(fronts[p.Id], p.PresetIds));
+        Assert.All(profiles.Where(p => p.Id != "folders"), p => Assert.Equal(fronts[p.Id], p.PresetIds));
         Assert.False(SettingsMigrations.ApplyToLibrary(29, presets, profiles)); // once only
         Assert.False(SettingsMigrations.ApplyToLibrary(AppSettings.CurrentSchemaVersion, presets, profiles));
     }
@@ -235,12 +235,13 @@ public partial class BackFaceTests
         // The fronts as read are the new ones, so the new back faces; the migrations before 30 then add front slots, and
         // v31, v33 and v37 back slots, as for any library of that schema.
         Assert.Equal(schema == 4
-            ? ["to-png", "to-jpg", "pdf-long-image", "to-docx", "pdf-slides", "to-hwp", "to-md", "to-epub"]
-            : ["to-png", "to-jpg", "pdf-long-image", "to-docx", "pdf-slides", "to-txt", "to-md", "to-epub", "to-hwpx", "to-hwp"],
+            ? ["to-png", "to-jpg", "pdf-long-image", "to-docx", "to-xlsx", "pdf-slides", "to-hwp", "to-md", "to-epub"]
+            : ["to-png", "to-jpg", "pdf-long-image", "to-docx", "to-xlsx", "pdf-slides", "to-txt", "to-md", "to-epub", "to-hwpx", "to-hwp"],
             Profile(back, "pdf").PresetIds);
         Assert.Equal(["pdf-edit", "pdf-split", "merge-pdf", "compress-pdf", "remove-metadata", "to-tiff", "to-html", "zip-all"],
             Profile(back, "pdf").BackPresetIds);
-        Assert.Equal(["to-png", "to-jpg", "to-webp", "to-gif", "to-pdf", "trace-svg", "trace-line-art"], Profile(back, "images").PresetIds);
+        Assert.Equal(["to-png", "to-jpg", "to-webp", "to-gif", "to-pdf", "merge-pdf", "trace-svg", "trace-line-art"],
+            Profile(back, "images").PresetIds);
         Assert.Equal(["tool-crop", "rotate", "remove-background", "trim-transparent", "merge-images", "compress-image", "half-size",
             "tool-image-edit", "remove-metadata", "zip-all"], Profile(back, "images").BackPresetIds);
         Assert.Equal(["to-mp4", "mp4-720", "mp4-hevc", "to-mov", "to-gif", "to-mp3", "extract-subtitles", "caption-video"],

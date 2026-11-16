@@ -6,6 +6,7 @@
 
 using Filee.Core.Conversion;
 using Filee.Core.Formats;
+using Filee.Core.Platform;
 using Filee.Core.Presets;
 using Filee.Engines.Infrastructure;
 
@@ -36,6 +37,9 @@ public sealed class ArchiveConverter : IConverter, IFileCombiner
         .. from source in SingleFileSources
            from target in ArchivePacker.SingleFileFormats
            select new ConversionEdge(source, target),
+        .. ArchiveExtractor.ReadableFormats.Select(source => new ConversionEdge(source, "iso", DirectOnly: true)),
+        .. new[] { "zip", "7z", "tar", "tgz", "tbz2", "txz" }
+            .Select(target => new ConversionEdge(FormatRegistry.Folder, target, DirectOnly: true)),
     ];
 
     public EngineStatus GetStatus()
@@ -46,6 +50,19 @@ public sealed class ArchiveConverter : IConverter, IFileCombiner
 
     public async Task<IReadOnlyList<string>> ConvertAsync(ConversionStep step, IProgress<double>? progress, CancellationToken cancellationToken)
     {
+        if (step.From == FormatRegistry.Folder)
+        {
+            var folder = new DirectoryInfo(Path.GetFullPath(Path.TrimEndingDirectorySeparator(step.InputPath)));
+            if (!folder.Exists) throw new DirectoryNotFoundException(folder.FullName);
+            if (folder.Parent is null || folder.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                throw new ConversionRefusedException("error.unsupported_source", folder.FullName);
+            var output = step.Output.Allocate(FormatRegistry.Get(step.To).PrimaryExtension);
+            if (output is null) return [];
+            var mark = MarkOfTheWeb.ReadFirst([folder.FullName], cancellationToken: cancellationToken);
+            await CombineAsync([folder.FullName], output, step.To, step.Preset, step.WorkDirectory, progress, cancellationToken);
+            if (mark is not null) MarkOfTheWeb.TryWrite(output, mark);
+            return [output];
+        }
         var sevenZip = _sevenZip ??= SevenZip.Locate();
         var extractor = new ArchiveExtractor(sevenZip);
         if (step.To == FormatRegistry.Folder)
@@ -59,6 +76,13 @@ public sealed class ArchiveConverter : IConverter, IFileCombiner
             string unpacked;
             using (ProgressEstimate.Start(progress, TypicalDuration(step.InputPath), 0.02, 0.45))
                 unpacked = await extractor.ExtractAsync(step.InputPath, step.From, scratch, cancellationToken);
+            if (step.To == "iso")
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return await new FolderIsoConverter().ConvertAsync(
+                    step with { InputPath = unpacked, From = FormatRegistry.Folder },
+                    Scaled(progress, 0.5, 1), cancellationToken);
+            }
             if (GamePacks.Formats.Contains(step.To))
                 unpacked = GamePacks.Root(unpacked, step.To);
             var items = Directory.EnumerateFileSystemEntries(unpacked)

@@ -136,15 +136,29 @@ public sealed class MacOSPlatformServices : IPlatformServices
             NativeMethods.RaiseTopmost(windowHandle);
     }
 
+    public void MoveToActiveSpace(nint windowHandle)
+    {
+        if (windowHandle != 0)
+            NativeMethods.MoveToActiveSpace(windowHandle);
+    }
+
     /// <summary>Restores a topmost window's native class and style after it hides or before it closes.</summary>
     public void RestoreWindow(nint windowHandle)
     {
         if (windowHandle != 0)
+        {
+            if (_keyWindow == windowHandle)
+            {
+                _keyWindow = 0;
+                NativeMethods.ReleaseKeyWindow(windowHandle);
+            }
             NativeMethods.RestoreWindow(windowHandle);
+        }
     }
 
     // The app the donut took the keyboard from (its process id), 0 for none.
     private int _focusFrom;
+    private nint _keyWindow;
 
     public void RememberFrontApp()
     {
@@ -154,10 +168,32 @@ public sealed class MacOSPlatformServices : IPlatformServices
 
     public void ReturnFocus()
     {
+        var keyWindow = _keyWindow;
+        _keyWindow = 0;
+        if (keyWindow != 0)
+            NativeMethods.ReleaseKeyWindow(keyWindow);
+
         var from = _focusFrom;
         _focusFrom = 0;
         if (from != 0 && NativeMethods.FrontmostProcessId() == Environment.ProcessId)
             NativeMethods.ActivateProcess(from);
+    }
+
+    public void TakeKeyWindow(nint windowHandle)
+    {
+        if (windowHandle == 0)
+            return;
+        _keyWindow = windowHandle;
+        NativeMethods.TakeKeyWindow(windowHandle);
+    }
+
+    public void ReleaseKeyWindow(nint windowHandle)
+    {
+        if (windowHandle == 0)
+            return;
+        if (_keyWindow == windowHandle)
+            _keyWindow = 0;
+        NativeMethods.ReleaseKeyWindow(windowHandle);
     }
 
     /// <summary>

@@ -4,6 +4,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Filee.Core.Formats;
+using Filee.Core.Platform;
 using Filee.Core.Presets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,6 +32,8 @@ public sealed partial class JobQueue : IAsyncDisposable
     private readonly Task _worker;
     private readonly Func<string, Platform.TrashRefusal?>? _moveToTrash;
     private int _busy;
+    /// <summary>The jobs that wait in the queue or run: "Move the original to the Trash" keeps a source another one still lists (#1387).</summary>
+    private readonly List<ConversionJob> _live = [];
 
     /// <param name="catalog">Converters and their priority.</param>
     /// <param name="pdfMerger">Used by "Merge into one PDF" presets.</param>
@@ -66,10 +69,13 @@ public sealed partial class JobQueue : IAsyncDisposable
 
     /// <summary>Adds a job to the queue and returns it immediately.</summary>
     /// <param name="fetcher">Saves sources that aren't files yet (files from a browser) when the job runs.</param>
-    public ConversionJob Enqueue(IReadOnlyList<string> sources, Preset preset, string presetDisplayName, ISourceFetcher? fetcher = null)
+    public ConversionJob Enqueue(IReadOnlyList<string> sources, Preset preset, string presetDisplayName, ISourceFetcher? fetcher = null,
+        IReadOnlySet<string>? folderSources = null)
     {
-        var job = new ConversionJob(sources, preset, presetDisplayName, fetcher);
+        var job = new ConversionJob(sources, preset, presetDisplayName, fetcher, folderSources);
         Interlocked.Increment(ref _busy); // until the worker is done with it
+        lock (_live)
+            _live.Add(job);
         _channel.Writer.TryWrite(job);
         JobUpdated?.Invoke(this, job);
         return job;
@@ -79,12 +85,19 @@ public sealed partial class JobQueue : IAsyncDisposable
     public async Task RunAsync(ConversionJob job)
     {
         Interlocked.Increment(ref _busy);
+        lock (_live)
+        {
+            if (!_live.Contains(job))
+                _live.Add(job);
+        }
         try
         {
             await RunJobAsync(job);
         }
         finally
         {
+            lock (_live)
+                _live.Remove(job);
             Interlocked.Decrement(ref _busy);
         }
     }
@@ -273,10 +286,29 @@ public sealed partial class JobQueue : IAsyncDisposable
             await finisher.FinishAsync(pdf, preset.Pdf, ct);
     }
 
+    /// <summary>
+    /// Makes the PDFs among <paramref name="outputs"/> PDF/A when the preset asks for it (<see cref="DocumentOptions.PdfA"/>),
+    /// after the finishing, which would undo it. Without Ghostscript they stay as they are and the file says so, rather
+    /// than pass for PDF/A.
+    /// </summary>
+    /// <param name="changed">Rewritten since the engine wrote it: a PDF/A from LibreOffice no longer is one.</param>
+    private async Task ArchivePdfsAsync(Preset preset, IReadOnlyList<string> outputs, FileResult file, string workDir, bool changed,
+        CancellationToken ct)
+    {
+        if (!preset.Document.PdfA)
+            return;
+        var archiver = _catalog.All.OfType<IPdfArchiver>().FirstOrDefault();
+        foreach (var pdf in outputs.Where(o => FormatRegistry.Detect(o)?.Id == "pdf"))
+        {
+            if (archiver is null || !await archiver.ArchiveAsync(pdf, changed, workDir, ct))
+                file.NoticeKey = "notice.pdfa_needs_ghostscript";
+        }
+    }
+
     /// <summary>Converts every file to PDF in the work directory, then merges them into one output.</summary>
     private async Task RunMergedAsync(ConversionJob job, RoutePlanner planner, string workDir)
     {
-        var parts = new string?[job.Files.Count];
+        var parts = new PdfMergeInput?[job.Files.Count];
         await Parallel.ForEachAsync(Enumerable.Range(0, job.Files.Count),
             new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
             async (i, _) =>
@@ -292,14 +324,15 @@ public sealed partial class JobQueue : IAsyncDisposable
                     if (job.Preset.Image.ReworksPixels)
                         FailUnturned(job, file, "pdf → pdf");
                     else
-                        parts[i] = file.SourcePath;
+                        parts[i] = new(file.SourcePath, Path.GetFileName(file.SourcePath));
                     return;
                 }
                 var produced = await RunFileAsync(job, file, i + 1, planner, workDir, finalOutput: false);
-                parts[i] = produced.FirstOrDefault();
+                if (produced.FirstOrDefault() is { } pdfPath)
+                    parts[i] = new(pdfPath, Path.GetFileName(file.SourcePath));
             });
 
-        var inputs = parts.OfType<string>().ToList();
+        var inputs = parts.OfType<PdfMergeInput>().ToList();
         if (inputs.Count == 0 || job.CancellationToken.IsCancellationRequested)
             return;
 
@@ -314,9 +347,21 @@ public sealed partial class JobQueue : IAsyncDisposable
 
         try
         {
-            await _pdfMerger!.MergeAsync(inputs, output, job.CancellationToken);
-            // Once for the merged PDF, so its pages are numbered through.
+            var pdf = job.Preset.Pdf;
+            PdfMergePaper? paper = pdf.NormalizeMergePaper ? new(pdf.MergePaper, pdf.MergeOrientation) : null;
+            await _pdfMerger!.MergeAsync(inputs, output, pdf.SourceBookmarks, paper, job.CancellationToken);
+            // Once for the merged PDF, so its pages are numbered through. PDFsharp wrote it, so it is no PDF/A yet.
             await FinishPdfsAsync(job.Preset, [output], job.CancellationToken);
+            await ArchivePdfsAsync(job.Preset, [output], first, workDir, changed: true, job.CancellationToken);
+        }
+        catch (ConversionRefusedException ex)
+        {
+            // A refusal (a page the paper size can't be fitted to, say) is told on every merged file, as joining does.
+            allocator.Discard();
+            _log.LogInformation("Merging {Count} file(s) into {Output} was refused: {Reason}", inputs.Count, output, ex.Message);
+            foreach (var f in job.Files.Where(f => !Stopped(f)))
+                FailFile(job, f, ex.ErrorKey, ex.Detail);
+            return;
         }
         catch
         {
@@ -411,6 +456,9 @@ public sealed partial class JobQueue : IAsyncDisposable
                 FailFile(job, f, "error.too_many_pictures", $"{pictures} > {MediaOptions.MaxSlides}");
             return;
         }
+        // Songs go under videos only: on their own they would make a video of nothing.
+        var withVideo = !slideshow && target.Category == FormatCategory.Video
+            && job.Files.Any(f => !Stopped(f) && FormatRegistry.Detect(f.SourcePath)?.Category == FormatCategory.Video);
         var parts = new IReadOnlyList<string>?[job.Files.Count];
         await Parallel.ForEachAsync(Enumerable.Range(0, job.Files.Count),
             new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
@@ -438,9 +486,10 @@ public sealed partial class JobQueue : IAsyncDisposable
                             ceiling: PicturesReadyShare);
                     return;
                 }
-                // A video's sound can join an audio file; a picture or a document joins nothing.
+                // A video's sound can join an audio file, and an audio file plays as music under videos (#1402); a
+                // picture or a document joins nothing.
                 var joins = source.Category == FormatCategory.Video
-                    || source.Category == FormatCategory.Audio && target.Category == FormatCategory.Audio;
+                    || source.Category == FormatCategory.Audio && (target.Category == FormatCategory.Audio || withVideo);
                 if (!joins)
                 {
                     FailFile(job, file, "error.no_route", $"{source.Id} → {target.Id}");
@@ -451,6 +500,13 @@ public sealed partial class JobQueue : IAsyncDisposable
 
         var joined = job.Files.Where((f, i) => parts[i] is { Count: > 0 } && f.State != FileState.Failed).ToList();
         var inputs = parts.Where(p => p is not null).SelectMany(p => p!).ToList();
+        // The merged video is named after its first video, also when a song comes before it in the order.
+        if (withVideo && joined.FindIndex(f => FormatRegistry.Detect(f.SourcePath)?.Category == FormatCategory.Video) is > 0 and var video)
+        {
+            var named = joined[video];
+            joined.RemoveAt(video);
+            joined.Insert(0, named);
+        }
         if (inputs.Count == 0 || job.CancellationToken.IsCancellationRequested)
         {
             Notify(job);
@@ -596,13 +652,17 @@ public sealed partial class JobQueue : IAsyncDisposable
     }
 
     /// <summary>
-    /// Why a file the preset turns, mirrors, covers parts of or draws on can't be: no step of its route changes images.
+    /// Why a file the preset turns, mirrors, covers parts of, draws on or sets on a background can't be: no step of its
+    /// route changes images.
     /// </summary>
     private static string CannotReworkKey(ImageOptions image) =>
-        image.HidesAreas ? "error.cannot_hide" : image.HasAnnotations ? "error.images_only" : "error.cannot_turn";
+        image.HidesAreas ? "error.cannot_hide"
+        : image.HasAnnotations || image.AddsBackdrop ? "error.images_only"
+        : "error.cannot_turn";
 
     /// <summary>
-    /// A file that would be used as it is although the preset turns, mirrors, covers parts of or draws on it.
+    /// A file that would be used as it is although the preset turns, mirrors, covers parts of, draws on or sets it on a
+    /// background.
     /// </summary>
     private void FailUnturned(ConversionJob job, FileResult file, string detail)
     {
@@ -672,7 +732,11 @@ public sealed partial class JobQueue : IAsyncDisposable
                         files.Add(file);
                 }
             }
+            // An archive with a file from the internet in it still came from there, whichever file that was.
+            var mark = Platform.MarkOfTheWeb.ReadFirst(files, _log, job.CancellationToken);
             await _combiner!.CombineAsync(files, output, format.Id, job.Preset, workDir, progress, job.CancellationToken);
+            if (mark is not null && File.Exists(output))
+                Platform.MarkOfTheWeb.TryWrite(output, mark, _log);
             inputs[0].Outputs.Add(output);
             foreach (var f in inputs)
             {
@@ -773,7 +837,7 @@ public sealed partial class JobQueue : IAsyncDisposable
         var runWith = options ?? job.Preset;
         if (Stopped(file))
             return [];
-        var source = FormatRegistry.Detect(file.SourcePath);
+        var source = file.IsFolder ? FormatRegistry.FindById(FormatRegistry.Folder) : FormatRegistry.Detect(file.SourcePath);
         if (source is null)
             return Fail(file, "error.unsupported_source", "." + FormatRegistry.ExtensionOf(file.SourcePath));
         // A file just made with "New" in the file manager stays 0 bytes until its app saves it: no engine can read it,
@@ -781,8 +845,25 @@ public sealed partial class JobQueue : IAsyncDisposable
         if (IsEmptyFile(file.SourcePath))
             return Fail(file, "error.empty_file", null);
 
+        // An envelope (a signed .p7m) is converted as the file inside it: the route opens it first, and everything
+        // below that depends on the format (same format, frames, OCR, …) asks about the file inside.
+        var from = source;
+        var opener = _catalog.All.OfType<IEnvelopeOpener>().FirstOrDefault(o => o.Opens(source.Id));
+        if (opener is not null)
+        {
+            try
+            {
+                from = FormatRegistry.Get(opener.InnerFormat(file.SourcePath, source.Id));
+            }
+            catch (ConversionRefusedException ex)
+            {
+                _log.LogInformation("Opening {File} was refused: {Reason}", file.SourcePath, ex.Message);
+                return Fail(file, ex.ErrorKey, ex.Detail);
+            }
+        }
+
         var target = !finalOutput ? intermediate
-            : runWith.TargetFormat == BuiltInData.SameAsSource ? runWith.CropsVideo ? VideoCrop.TargetFor(source.Id) : source.Id
+            : runWith.TargetFormat == BuiltInData.SameAsSource ? runWith.CropsVideo ? VideoCrop.TargetFor(from.Id) : from.Id
             : runWith.TargetFormat;
 
         if (finalOutput && job.Preset.TargetSizeBytes is not null && !TargetSizeSupport.IsSupported(source))
@@ -792,25 +873,37 @@ public sealed partial class JobQueue : IAsyncDisposable
         // video" likewise takes a photo's video, and "Live / Motion Photo" makes one of a video. Never for an
         // intermediate file, and never on the way to another format (video → JPG is otherwise one still frame, photo →
         // MP4 a video of the still picture).
-        var frames = finalOutput && runWith.SavesFramesOf(source.Id);
-        var motionPhoto = finalOutput && runWith.ExtractsMotionOf(source.Id);
-        var livePhoto = finalOutput && runWith.MakesLivePhotoOf(source.Id);
-        var caption = finalOutput && runWith.CaptionsVideo(source.Id);
+        var frames = finalOutput && runWith.SavesFramesOf(from.Id);
+        var motionPhoto = finalOutput && runWith.ExtractsMotionOf(from.Id);
+        var livePhoto = finalOutput && runWith.MakesLivePhotoOf(from.Id);
+        var caption = finalOutput && runWith.CaptionsVideo(from.Id);
         var translate = finalOutput && runWith.Translate.Enabled;
-        if (translate && !runWith.TranslatesDocument(source.Id))
-            return Fail(file, "error.no_route", $"{source.Id} → {target}", new RouteRequest(source.Id, target, Translate: true));
+        if (translate && !runWith.TranslatesDocument(from.Id))
+            return Fail(file, "error.no_route", $"{from.Id} → {target}", new RouteRequest(from.Id, target, Translate: true));
+        var upscale = finalOutput && runWith.Upscale.Enabled;
+        if (upscale && !UpscaleTool.CanUpscale(from.Id))
+            return Fail(file, "error.no_route", $"{from.Id} → {target}", new RouteRequest(from.Id, target, Upscale: true));
         // "Recognize text": Tesseract writes a searchable PDF first, read on into DOCX, TXT, … from there. Also for the
         // PDFs that are merged into one.
-        var ocr = (finalOutput || target == "pdf") && runWith.RecognizesTextOf(source.Id);
-        var route = planner.Plan(source.Id, target, frames, motionPhoto: motionPhoto, livePhoto: livePhoto, ocr: ocr, caption: caption, translate: translate);
+        var ocr = (finalOutput || target == "pdf") && runWith.RecognizesTextOf(from.Id);
+        // "Metadata": only an engine that writes the metadata and nothing else, never a route that re-encodes the file.
+        // An envelope has no such edge: opening it for the file inside would drop the changes without a word.
+        var metadata = finalOutput && runWith.EditsMetadata;
+        var route = opener is null || metadata
+            ? planner.Plan(source.Id, target, frames, motionPhoto: motionPhoto, livePhoto: livePhoto, ocr: ocr, caption: caption, translate: translate,
+                metadata: metadata, upscale: upscale)
+            : planner.PlanThrough(source.Id, from.Id, target, frames, motionPhoto: motionPhoto, livePhoto: livePhoto, ocr: ocr, caption: caption, translate: translate,
+                upscale: upscale);
         if (route is null)
-            return Fail(file, "error.no_route", $"{source.Id} → {target}",
-                new RouteRequest(source.Id, target, Frames: frames, MotionPhoto: motionPhoto, LivePhoto: livePhoto, Ocr: ocr, Translate: translate));
+            return Fail(file, "error.no_route", $"{from.Id} → {target}",
+                new RouteRequest(from.Id, target, Frames: frames, MotionPhoto: motionPhoto, LivePhoto: livePhoto, Ocr: ocr, Translate: translate, Metadata: metadata,
+                    Upscale: upscale));
 
         // A step that draws text without shaping (rhwp) would break Arabic, Hebrew, Indic or Thai text: such a file
         // takes a route without it (LibreOffice), or is refused with the reason rather than written broken. One
-        // scan of the file's text answers this and the widths question below.
-        var scripts = route.Steps.FirstOrDefault(s => s.Unshaped)?.Converter is ITextShapingCheck check
+        // scan of the file's text answers this and the widths question below. Not for an envelope, whose own bytes
+        // aren't the document's.
+        var scripts = opener is null && route.Steps.FirstOrDefault(s => s.Unshaped)?.Converter is ITextShapingCheck check
             ? ScanScripts(check, file.SourcePath, source.Id)
             : null;
         if (scripts?.NeedsShaping is { } script)
@@ -860,7 +953,7 @@ public sealed partial class JobQueue : IAsyncDisposable
                 var isLast = s == route.Steps.Count - 1;
                 IOutputAllocator allocator = isLast && finalOutput && !zipResult
                     ? final = CreateFinalAllocator(job, file.SourcePath, index)
-                    : new TempAllocator(workDir, FormatRegistry.NameWithoutExtension(file.SourcePath));
+                    : new TempAllocator(workDir, file.IsFolder ? Path.GetFileName(Path.TrimEndingDirectorySeparator(file.SourcePath)) : FormatRegistry.NameWithoutExtension(file.SourcePath));
 
                 var outputs = new List<string>();
                 foreach (var input in inputs)
@@ -912,14 +1005,18 @@ public sealed partial class JobQueue : IAsyncDisposable
             }
 
             // Under "Save as ZIP" the output is still in the work folder: the source copied over it goes into the ZIP.
-            // Never with hidden parts: the source copied over the result would show them again.
-            var copiedSource = finalOutput && runWith.Output.OnlyIfSmaller && !runWith.Image.HidesAreas && inputs.Count == 1
+            // Never with hidden parts: the source copied over the result would show them again. Never for an envelope,
+            // which isn't a file of the result's format.
+            var copiedSource = finalOutput && runWith.Output.OnlyIfSmaller && !runWith.Image.HidesAreas && opener is null && inputs.Count == 1
                 && CopyIfNotSmaller(file.SourcePath, inputs[0]);
             if (copiedSource)
                 file.NoticeKey = "notice.pdf_not_smaller";
-            // Watermark, page numbers, password: on every PDF this file became, from whichever engine.
+            // Watermark, page numbers, password, then PDF/A: on every PDF this file became, from whichever engine.
             if (finalOutput && runWith.TargetFormat == "pdf")
+            {
                 await FinishPdfsAsync(runWith, inputs, ct);
+                await ArchivePdfsAsync(runWith, inputs, file, workDir, changed: runWith.Pdf.FinishesPdf, ct);
+            }
             // The size limit (#553): a result the engine couldn't fit (HEIC, a render, an animation) isn't handed over.
             if (finalOutput)
                 SizeLimit.Check(runWith, inputs, file.SourcePath);
@@ -933,10 +1030,14 @@ public sealed partial class JobQueue : IAsyncDisposable
             else if (finalOutput && inputs.Count == 1 && final is { Handed: 1 })
                 inputs = [NextToSource(job, file, index, inputs[0], final)];
 
-            // The source's dates are read now: "Replace the original" may send it to the Trash below.
+            // The source's dates and Mark of the Web are read now: "Replace the original" may send it to the Trash below.
             var dates = finalOutput && runWith.Output.KeepDates ? DatesOf(file.SourcePath) : null;
+            // A file converted from one that came from the internet still did (Office's macro block, SmartScreen).
+            var mark = finalOutput ? Platform.MarkOfTheWeb.Read(file.SourcePath) : null;
             if (finalOutput && !zipResult && inputs.Count == 1)
                 inputs = [ReplaceOriginal(job, file, source.Id, inputs[0], copiedSource)];
+            if (finalOutput && !zipResult && !copiedSource)
+                TrashOriginal(job, file, source.Id, inputs);
 
             // A name the engine took but wrote nothing to is free again.
             final?.Release(except: inputs);
@@ -945,6 +1046,9 @@ public sealed partial class JobQueue : IAsyncDisposable
                 file.Outputs.AddRange(inputs);
                 if (dates is { } kept)
                     CopyDates(kept, inputs);
+                if (mark is not null)
+                    foreach (var output in inputs.Where(File.Exists))
+                        Platform.MarkOfTheWeb.TryWrite(output, mark, _log);
             }
             file.State = inputs.Count == 0 && finalOutput ? FileState.Skipped : FileState.Done;
             file.Progress = ceiling;
@@ -978,6 +1082,7 @@ public sealed partial class JobQueue : IAsyncDisposable
             copy.Image.Flip = ImageFlip.None;
             copy.Image.HiddenAreas = null;
             copy.Image.Annotations = null;
+            copy.Image.Backdrop = null;
             return copy;
         }
 
@@ -1086,7 +1191,8 @@ public sealed partial class JobQueue : IAsyncDisposable
     /// <param name="oneFile">The output is one file whatever happens (a merged PDF, a multi-page TIFF, an archive).</param>
     private FinalAllocator CreateFinalAllocator(ConversionJob job, string sourcePath, int index, bool oneFile = false) =>
         new(this, oneFile ? ForOneFile(job.Preset.Output) : job.Preset.Output,
-            new OutputPathResolver.Tokens(sourcePath, job.PresetDisplayName, index, job.CreatedAt));
+            new OutputPathResolver.Tokens(sourcePath, job.PresetDisplayName, index, job.CreatedAt,
+                job.Files.Any(f => f.IsFolder && FileSystemPaths.Comparer.Equals(f.SourcePath, sourcePath))));
 
     /// <summary>
     /// The rule for a single output file: with <see cref="OutputRule.SubfolderOnlyForSeveralFiles"/> it is saved next to
@@ -1120,7 +1226,7 @@ public sealed partial class JobQueue : IAsyncDisposable
 
         lock (_reservedOutputs)
         {
-            var tokens = new OutputPathResolver.Tokens(file.SourcePath, job.PresetDisplayName, index, job.CreatedAt);
+            var tokens = new OutputPathResolver.Tokens(file.SourcePath, job.PresetDisplayName, index, job.CreatedAt, file.IsFolder);
             var target = OutputPathResolver.Resolve(rule, tokens, Path.GetExtension(output),
                 p => !PathsEqual(p, output) && (File.Exists(p) || Directory.Exists(p) || _reservedOutputs.ContainsKey(p)));
             if (target is null || PathsEqual(target, output))
@@ -1268,6 +1374,56 @@ public sealed partial class JobQueue : IAsyncDisposable
         }
     }
 
+    /// <summary>True while another queued or running job still has <paramref name="source"/> to convert.</summary>
+    private bool UsedByAnotherJob(ConversionJob job, string source)
+    {
+        lock (_live)
+            return _live.Any(other => !ReferenceEquals(other, job) && other.Files.Any(f =>
+                (f.State is FileState.Pending or FileState.Running)
+                && string.Equals(f.SourcePath, source, Platform.FileSystemPaths.Comparison)));
+    }
+
+    /// <summary>
+    /// "Move the original to the Recycle Bin / Trash" (<see cref="OutputRule.TrashOriginalAfterConvert"/>, #1387): once
+    /// every result of <paramref name="file"/> is complete and none has the source's format, the source goes to the
+    /// Trash. A result of the source's own format is "Replace the original"'s, and a result at the source's own path
+    /// would be moved with it, so either leaves the source alone. When the Trash refuses, the source stays and the
+    /// file gets a note saying why; nothing is ever deleted for good.
+    /// </summary>
+    private void TrashOriginal(ConversionJob job, FileResult file, string sourceFormat, IReadOnlyList<string> outputs)
+    {
+        var source = file.SourcePath;
+        if (!job.Preset.Output.TrashOriginalAfterConvert || job.Fetcher is not null || file.OriginalInTrash
+            || outputs.Count == 0 || !File.Exists(source))
+            return;
+        foreach (var output in outputs)
+        {
+            if (string.Equals(Path.GetFullPath(output), Path.GetFullPath(source), Platform.FileSystemPaths.Comparison))
+                return;
+            if (Directory.Exists(output))
+                continue; // an output folder (Extract)
+            if (!File.Exists(output) || FormatRegistry.Detect(output)?.Id == sourceFormat)
+                return;
+        }
+
+        // The same file dropped on two presets is two jobs: once this one has moved it, the other would fail as not found.
+        if (UsedByAnotherJob(job, source))
+        {
+            _log.LogInformation("Kept the original {Source}: another conversion still uses it", source);
+            file.NoticeKey = "notice.trash_original_busy";
+            return;
+        }
+
+        var refusal = _moveToTrash is null ? new Platform.TrashRefusal("trash.no_recycle_bin") : _moveToTrash(source);
+        file.OriginalInTrash = refusal is null;
+        if (refusal is null)
+            return;
+        _log.LogInformation("Kept the original {Source}: {Reason} {Detail}", source, refusal.ReasonKey, refusal.Detail);
+        file.NoticeKey = "notice.trash_original_kept";
+        file.NoticeReasonKey = refusal.ReasonKey;
+        file.NoticeDetail = refusal.Detail;
+    }
+
     /// <summary>Extensions that only spell the same kind of file differently ("Replace the original" may swap them).</summary>
     private static readonly string[][] Spellings =
     [
@@ -1338,13 +1494,18 @@ public sealed partial class JobQueue : IAsyncDisposable
             }
             finally
             {
+                lock (_live)
+                    _live.Remove(job);
                 Interlocked.Decrement(ref _busy);
             }
         }
     }
 
-    /// <summary>Where every job has its work folder, named by the job's <see cref="ConversionJob.Id"/>.</summary>
-    public static string DefaultWorkRoot => Path.Combine(Path.GetTempPath(), "Filee");
+    /// <summary>
+    /// Where every job has its work folder, named by the job's <see cref="ConversionJob.Id"/>: a folder only the user
+    /// can open (<see cref="WorkFolders.Root"/>).
+    /// </summary>
+    public static string DefaultWorkRoot => WorkFolders.Root;
 
     /// <summary>
     /// Deletes the work folders of jobs a crash, a forced quit or a power cut kept from removing them: intermediate
@@ -1357,7 +1518,7 @@ public sealed partial class JobQueue : IAsyncDisposable
         try
         {
             var root = new DirectoryInfo(workRoot);
-            // A temp folder everyone can write in (/tmp on Linux) may hold a link to somewhere else: never follow one.
+            // A work root (or a folder in it) may be a link to somewhere else: never follow one.
             if (!root.Exists || root.LinkTarget is not null)
                 return;
             foreach (var folder in root.EnumerateDirectories())
